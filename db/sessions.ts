@@ -1,11 +1,11 @@
 /**
  * db/sessions.ts
- * CRUD for time_sessions — live timer starts/stops and manual log entries.
+ * CRUD for time_sessions -- live timer starts/stops and manual log entries.
  */
 
 import { getDb } from './schema';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────────────────
 
 export interface TimeSession {
   id: number;
@@ -20,12 +20,12 @@ export interface TimeSession {
 }
 
 export interface ActiveSession extends TimeSession {
-  /** Task name — joined from tasks table for UI display. */
+  /** Task name -- joined from tasks table for UI display. */
   name: string;
   quota_minutes: number | null;
 }
 
-// ─── Reads ────────────────────────────────────────────────────────────────────
+// ─── Reads ─────────────────────────────────────────────────────────────────────────────────
 
 /**
  * Find the currently running timer session across all tasks.
@@ -59,7 +59,7 @@ export async function getSessionsForDate(
   `, [taskId, date]);
 }
 
-// ─── Timer writes ─────────────────────────────────────────────────────────────
+// ─── Timer writes ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Start a timer session for a task.
@@ -111,7 +111,7 @@ export async function stopSession(
 
 /**
  * Close any orphaned active sessions on app launch.
- * Handles crash recovery — calculates elapsed from stored started_at.
+ * Handles crash recovery -- calculates elapsed from stored started_at.
  * Minimum 1 minute recorded to avoid zero-duration noise.
  */
 export async function recoverOrphanedSessions(): Promise<void> {
@@ -131,11 +131,11 @@ export async function recoverOrphanedSessions(): Promise<void> {
   }
 }
 
-// ─── Manual log ───────────────────────────────────────────────────────────────
+// ─── Manual log ───────────────────────────────────────────────────────────────────────────────
 
 /**
  * Add a manually entered time session.
- * No started_at / ended_at — just a duration.
+ * No started_at / ended_at -- just a duration.
  * Returns the new session id.
  *
  * CALLER MUST also update daily_progress after inserting:

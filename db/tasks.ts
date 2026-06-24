@@ -5,13 +5,13 @@
 
 import { getDb } from './schema';
 
-// ─── Date utility ─────────────────────────────────────────────────────────────
+// ─── Date utility ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Returns today's date as 'YYYY-MM-DD' in the device's local timezone.
  * Used as the canonical `date` value for all daily_progress and time_sessions rows.
  *
- * IMPORTANT: Always use this function — never call `new Date().toISOString().slice(0, 10)`
+ * IMPORTANT: Always use this function -- never call `new Date().toISOString().slice(0, 10)`
  * which returns UTC date and will be wrong for users with non-UTC timezones, especially
  * around midnight and custom reset times.
  */
@@ -23,7 +23,7 @@ export function getCurrentDateString(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────────────────
 
 export type TaskType = 'focus' | 'habit';
 
@@ -78,7 +78,7 @@ export interface ReorderEntry {
   sort_order: number;
 }
 
-// ─── Reads ────────────────────────────────────────────────────────────────────
+// ─── Reads ─────────────────────────────────────────────────────────────────────────────────
 
 /**
  * Load all active focus tasks with today's progress.
@@ -140,10 +140,10 @@ export async function getTask(id: number): Promise<Task | null> {
 
 /**
  * Find the next incomplete focus task after the one that just finished.
- * Used for the Time's Up notification — returns null if all tasks are complete.
+ * Used for the Time's Up notification -- returns null if all tasks are complete.
  *
  * NOTE: intentionally only searches tasks with sort_order HIGHER than the completed task.
- * Out-of-order manual completions (e.g. task B done before task A) do not route backward —
+ * Out-of-order manual completions (e.g. task B done before task A) do not route backward --
  * "next" always means lower priority (higher sort_order). This is correct by design.
  */
 export async function getNextPendingFocusTask(
@@ -178,7 +178,7 @@ export async function getNextPendingFocusTask(
  * needed for notification rescheduling: id, name, interval_minutes.
  *
  * Called by the daily reset background task to reschedule all interval notifications
- * from scratch. Does NOT join daily_progress — no date context needed here.
+ * from scratch. Does NOT join daily_progress -- no date context needed here.
  */
 export async function getActiveHabitTasksBasic(): Promise<
   Pick<Task, 'id' | 'name' | 'interval_minutes'>[]
@@ -209,7 +209,7 @@ export async function getArchivedTasks(): Promise<Task[]> {
   `);
 }
 
-// ─── Writes ───────────────────────────────────────────────────────────────────
+// ─── Writes ───────────────────────────────────────────────────────────────────────────────
 
 /**
  * Create a new Focus task. Appends to bottom of priority list.
@@ -345,7 +345,7 @@ export async function restoreTask(id: number): Promise<void> {
       AND is_archived = 0;
   `, [task.task_type]);
 
-  // For habit tasks, all sort_order values are 0 so nextOrder = 1 — harmless,
+  // For habit tasks, all sort_order values are 0 so nextOrder = 1 -- harmless,
   // since sort_order is never read for habits. Focus tasks get the correct bottom position.
   const nextOrder = (maxRow?.max_order ?? 0) + 1;
 

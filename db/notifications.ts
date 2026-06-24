@@ -6,7 +6,7 @@
 
 import { getDb } from './schema';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────────────────
 
 export type NotificationType = 'interval' | 'times_up';
 
@@ -29,13 +29,13 @@ export interface CancelledIntervalNotification extends NotificationRecord {
   name: string;
 }
 
-// ─── Writes ───────────────────────────────────────────────────────────────────
+// ─── Writes ───────────────────────────────────────────────────────────────────────────────
 
 /**
  * Record a newly scheduled notification.
  * Call immediately after expo-notifications.scheduleNotificationAsync() succeeds.
  *
- * For `notification_type = 'times_up'`: pass `scheduledFor = Date.now()` —
+ * For `notification_type = 'times_up'`: pass `scheduledFor = Date.now()` --
  * times_up fires immediately (event-driven on quota hit, not time-scheduled).
  * For `notification_type = 'interval'`: pass the actual future fire timestamp
  * so getCancelledIntervalNotifications() can check if it's still in the future
@@ -100,11 +100,11 @@ export async function clearAllNotificationRecords(): Promise<void> {
   await db.execAsync('DELETE FROM notification_schedule;');
 }
 
-// ─── Reads ────────────────────────────────────────────────────────────────────
+// ─── Reads ─────────────────────────────────────────────────────────────────────────────────
 
 /**
  * Get all active notification records for a task.
- * Used before archiving/deleting/updating interval — caller needs the
+ * Used before archiving/deleting/updating interval -- caller needs the
  * expo notification_id strings to call expo-notifications cancel API.
  */
 export async function getActiveNotificationsForTask(
@@ -141,7 +141,7 @@ export async function getNotificationByExpoId(
  * Get all cancelled INTERVAL notifications that still have a future fire time.
  * Used when snooze is turned off to know which habit notifications to reschedule.
  *
- * Note: 'times_up' notifications are NOT rescheduled — they are event-driven
+ * Note: 'times_up' notifications are NOT rescheduled -- they are event-driven
  * (fire when quota is hit, not on a time schedule).
  */
 export async function getCancelledIntervalNotifications(
