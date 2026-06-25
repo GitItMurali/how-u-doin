@@ -24,7 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useFocusEffect } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
-import { Plus } from 'phosphor-react-native';
+import { Plus, BellSimpleZ, BellSimple } from 'phosphor-react-native';
 import DraggableFlatList, {
   RenderItemParams,
 } from 'react-native-draggable-flatlist';
@@ -38,6 +38,7 @@ import {
   reorderFocusTasks,
   deleteTask,
   getTask,
+
   getOrCreateProgress,
   markComplete,
   getNextPendingFocusTask,
@@ -47,6 +48,12 @@ import FocusTaskCard from '@/components/FocusTaskCard';
 import HabitTaskCard from '@/components/HabitTaskCard';
 import EmptyState from '@/components/EmptyState';
 import { useTimer } from '@/hooks/useTimer';
+import { useSnooze } from '@/hooks/snooze';
+import SnoozeBanner from '@/components/SnoozeBanner';
+import {
+  cancelNotificationsForTaskFull,
+  fireTimesUpNotification,
+} from '@/notifications/scheduler';
 
 type HomeNavProp = StackNavigationProp<RootStackParamList>;
 type ActiveTab = 'focus' | 'habit';
@@ -56,6 +63,7 @@ export default function HomeScreen() {
   const navigation = useNavigation<HomeNavProp>();
   const [activeTab, setActiveTab] = useState<ActiveTab>('focus');
   const { activeTaskId, elapsedSeconds, toggleTimer, pauseTimer, recoverTimer } = useTimer();
+  const { snoozed, toggleSnooze } = useSnooze();
 
   const [focusTasks, setFocusTasks] = useState<TaskWithProgress[]>([]);
   const [habitTasks, setHabitTasks] = useState<HabitWithProgress[]>([]);
@@ -104,8 +112,8 @@ export default function HomeScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            // Phase 5: cancel any scheduled notifications for this task first
-            // (INTEGRATION-06 — deleteTask CALLER MUST cancel notifications).
+            // INTEGRATION-06 — deleteTask CALLER MUST cancel notifications first.
+            await cancelNotificationsForTaskFull(taskId);
             await deleteTask(taskId);
             await loadTasks();
           },
@@ -153,7 +161,12 @@ export default function HomeScreen() {
       await markComplete(taskId, today, task?.quota_minutes ?? undefined);
       // getNextPendingFocusTask only looks forward by sort_order — by design (QA-02).
       const next = await getNextPendingFocusTask(taskId, today);
-      // PHASE 5 SEAM: replace toast with a real local push (notifications/scheduler.ts).
+      // Phase 5: fire a real local push (notification_type 'times_up', never
+      // rescheduled — SCHEMA-02), unless snooze is active. Keep the toast as
+      // immediate in-app feedback.
+      if (!snoozed) {
+        await fireTimesUpNotification(taskId, name, next?.name ?? null);
+      }
       toast(next ? `${name} — time's up. Next up: ${next.name}.` : 'You finished everything. Take a breath.');
     }
     await loadTasks();
@@ -192,8 +205,23 @@ export default function HomeScreen() {
           <Text style={styles.appTitle}>How U Doin</Text>
           <Text style={styles.dateSubtitle}>{getTodayLabel()}</Text>
         </View>
-        <View style={styles.snoozeButton} />
+        <TouchableOpacity
+          style={[styles.snoozeButton, snoozed && styles.snoozeButtonActive]}
+          onPress={toggleSnooze}
+          activeOpacity={0.8}
+          hitSlop={8}
+          accessibilityLabel={snoozed ? 'Resume notifications' : 'Snooze notifications'}
+        >
+          {snoozed ? (
+            <BellSimpleZ size={22} color={colors.white} weight="fill" />
+          ) : (
+            <BellSimple size={22} color={colors.textSecondary} />
+          )}
+        </TouchableOpacity>
       </View>
+
+      {/* Snooze banner — slides in below header while snoozed */}
+      <SnoozeBanner visible={snoozed} onResume={toggleSnooze} />
 
       {/* Pill Tabs */}
       <View style={styles.pillContainer}>
@@ -295,6 +323,13 @@ const styles = StyleSheet.create({
   snoozeButton: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  snoozeButtonActive: {
+    backgroundColor: colors.snooze,
   },
   pillContainer: {
     flexDirection: 'row',

@@ -39,3 +39,9 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local debug/scratch (do not commit)
+crash.log
+*.log
+*.tmp
+hooks/_writetest.tmp

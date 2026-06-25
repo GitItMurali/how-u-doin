@@ -7,7 +7,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DB_NAME = 'howudoin.db';
-const CURRENT_VERSION = 1; // bump this when adding a new migration
+const CURRENT_VERSION = 2; // bump this when adding a new migration
 
 let _db: SQLite.SQLiteDatabase | null = null;
 
@@ -38,7 +38,43 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       await migrate_0_to_1(db);
       await db.execAsync('PRAGMA user_version = 1;');
     }
-    // Future: if (currentVersion < 2) { await migrate_1_to_2(db); await db.execAsync('PRAGMA user_version = 2;'); }
+    if (currentVersion < 2) {
+      await migrate_1_to_2(db);
+      await db.execAsync('PRAGMA user_version = 2;');
+    }
+  }
+}
+
+// ─── Migration 1 -> 2 (seconds-granular time tracking) ───────────────────────
+// daily_progress.logged_seconds + time_sessions.duration_seconds become the
+// source of truth; the *_minutes columns are kept in sync (floor(seconds/60))
+// so existing queries/readers keep working. Backfill seconds from existing
+// minutes so historical data isn't lost (best-effort: minutes * 60).
+async function migrate_1_to_2(db: SQLite.SQLiteDatabase): Promise<void> {
+  // SQLite can't easily check column existence inline; ALTER ... ADD COLUMN
+  // throws if it already exists, so guard each with a pragma check.
+  const dpCols = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(daily_progress);"
+  );
+  if (!dpCols.some((c) => c.name === 'logged_seconds')) {
+    await db.execAsync(
+      'ALTER TABLE daily_progress ADD COLUMN logged_seconds INTEGER NOT NULL DEFAULT 0;'
+    );
+    await db.execAsync(
+      'UPDATE daily_progress SET logged_seconds = logged_minutes * 60;'
+    );
+  }
+
+  const tsCols = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(time_sessions);"
+  );
+  if (!tsCols.some((c) => c.name === 'duration_seconds')) {
+    await db.execAsync(
+      'ALTER TABLE time_sessions ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0;'
+    );
+    await db.execAsync(
+      'UPDATE time_sessions SET duration_seconds = duration_minutes * 60;'
+    );
   }
 }
 
@@ -66,6 +102,7 @@ async function migrate_0_to_1(db: SQLite.SQLiteDatabase): Promise<void> {
       task_id                INTEGER NOT NULL REFERENCES tasks(id),
       date                   TEXT    NOT NULL,
       logged_minutes         INTEGER NOT NULL DEFAULT 0,
+      logged_seconds         INTEGER NOT NULL DEFAULT 0,
       is_complete            INTEGER NOT NULL DEFAULT 0,
       interval_count         INTEGER NOT NULL DEFAULT 0,
       last_interval_fired_at INTEGER,
@@ -81,6 +118,7 @@ async function migrate_0_to_1(db: SQLite.SQLiteDatabase): Promise<void> {
       started_at       INTEGER,
       ended_at         INTEGER,
       duration_minutes INTEGER NOT NULL,
+      duration_seconds INTEGER NOT NULL DEFAULT 0,
       is_manual        INTEGER NOT NULL DEFAULT 0,
       is_active        INTEGER NOT NULL DEFAULT 0,
       created_at       INTEGER NOT NULL

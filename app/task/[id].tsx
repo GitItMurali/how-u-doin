@@ -11,7 +11,11 @@ import { X } from 'phosphor-react-native';
 
 import { colors, typography, spacing, sheet } from '@/constants/theme';
 import type { RootStackParamList } from '@/app/_layout';
-import { getTask, updateTask } from '@/db';
+import { getTask, updateTask, isSnoozeActive } from '@/db';
+import {
+  cancelNotificationsForTaskFull,
+  scheduleIntervalNotification,
+} from '@/notifications/scheduler';
 import type { Task } from '@/db';
 import TaskForm, { TaskFormValue, QUOTA_PRESETS, INTERVAL_PRESETS } from '@/components/TaskForm';
 
@@ -50,11 +54,20 @@ export default function EditTaskModal() {
         quota_minutes: value.quotaMinutes,
       });
     } else {
+      const intervalChanged = task?.interval_minutes !== value.intervalMinutes;
       await updateTask(taskId, {
         name: value.name,
         notes: value.notes || undefined,
         interval_minutes: value.intervalMinutes,
       });
+      // INTEGRATION-06 contract: if the interval changed, cancel the old ping(s)
+      // and reschedule from now. Skip rescheduling while snooze is active.
+      if (intervalChanged) {
+        await cancelNotificationsForTaskFull(taskId);
+        if (!(await isSnoozeActive())) {
+          await scheduleIntervalNotification(taskId, value.name, value.intervalMinutes);
+        }
+      }
     }
     navigation.goBack();
   }

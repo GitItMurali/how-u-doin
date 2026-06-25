@@ -46,21 +46,23 @@ export default function FocusTaskCard({
   onToggleTimer,
   onComplete,
 }: FocusTaskCardProps) {
-  const quota = task.quota_minutes ?? 0;
-  const baseLogged = task.logged_minutes ?? 0;
+  const quota = task.quota_minutes ?? 0;        // quota in minutes
+  const quotaSeconds = quota * 60;
+  const baseSeconds = task.logged_seconds ?? 0; // persisted, seconds-granular
 
-  // While running, show provisional progress = persisted minutes + live elapsed.
-  const liveMinutes = isRunning ? liveSeconds / 60 : 0;
-  const displayMinutes = baseLogged + liveMinutes;
+  // While running, provisional progress = persisted seconds + live elapsed seconds.
+  const liveSec = isRunning ? liveSeconds : 0;
+  const displaySeconds = baseSeconds + liveSec;
 
-  const complete = task.is_complete === 1 || (quota > 0 && displayMinutes >= quota);
-  const pct = quota > 0 ? Math.min(1, displayMinutes / quota) : 0;
+  const complete =
+    task.is_complete === 1 || (quotaSeconds > 0 && displaySeconds >= quotaSeconds);
+  const pct = quotaSeconds > 0 ? Math.min(1, displaySeconds / quotaSeconds) : 0;
 
-  // Time label: "12:34 / 25m" while running, "12m / 25m" otherwise.
-  const runningLabel = formatClock(liveSeconds);
+  // Time label: "MM:SS / 25m". Persisted time shown as a clock so short sessions
+  // (e.g. 5s) read as 0:05, not a rounded-up "1m".
   const timeLabel = isRunning
-    ? `${runningLabel}  (+${baseLogged}m)  /  ${quota}m`
-    : `${baseLogged}m / ${quota}m`;
+    ? `${formatClock(displaySeconds)}  /  ${quota}m`
+    : `${formatClock(baseSeconds)} / ${quota}m`;
 
   function renderRightActions(
     _progress: Animated.AnimatedInterpolation<number>,

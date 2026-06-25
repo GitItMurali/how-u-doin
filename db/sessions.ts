@@ -14,6 +14,7 @@ export interface TimeSession {
   started_at: number | null;
   ended_at: number | null;
   duration_minutes: number;
+  duration_seconds: number;
   is_manual: number;   // 0 | 1
   is_active: number;   // 0 | 1
   created_at: number;
@@ -95,18 +96,20 @@ export async function startSession(taskId: number, date: string): Promise<number
  */
 export async function stopSession(
   sessionId: number,
-  durationMinutes: number
+  durationSeconds: number
 ): Promise<void> {
   const db = getDb();
   const now = Date.now();
+  const durationMinutes = Math.floor(durationSeconds / 60);
 
   await db.runAsync(`
     UPDATE time_sessions
     SET ended_at         = ?,
+        duration_seconds = ?,
         duration_minutes = ?,
         is_active        = 0
     WHERE id = ?;
-  `, [now, durationMinutes, sessionId]);
+  `, [now, durationSeconds, durationMinutes, sessionId]);
 }
 
 /**
@@ -123,10 +126,11 @@ export async function recoverOrphanedSessions(): Promise<void> {
   );
 
   for (const s of orphans) {
-    const elapsed = Math.max(1, Math.round((now - s.started_at) / 60000));
+    const elapsedSeconds = Math.max(1, Math.round((now - s.started_at) / 1000));
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
     await db.runAsync(
-      'UPDATE time_sessions SET ended_at = ?, duration_minutes = ?, is_active = 0 WHERE id = ?;',
-      [now, elapsed, s.id]
+      'UPDATE time_sessions SET ended_at = ?, duration_seconds = ?, duration_minutes = ?, is_active = 0 WHERE id = ?;',
+      [now, elapsedSeconds, elapsedMinutes, s.id]
     );
   }
 }
@@ -152,9 +156,9 @@ export async function addManualSession(
 
   const result = await db.runAsync(`
     INSERT INTO time_sessions
-      (task_id, date, started_at, ended_at, duration_minutes, is_manual, is_active, created_at)
-    VALUES (?, ?, NULL, NULL, ?, 1, 0, ?);
-  `, [taskId, date, durationMinutes, now]);
+      (task_id, date, started_at, ended_at, duration_minutes, duration_seconds, is_manual, is_active, created_at)
+    VALUES (?, ?, NULL, NULL, ?, ?, 1, 0, ?);
+  `, [taskId, date, durationMinutes, durationMinutes * 60, now]);
 
   return result.lastInsertRowId;
 }

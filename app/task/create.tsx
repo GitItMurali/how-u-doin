@@ -11,7 +11,8 @@ import { X } from 'phosphor-react-native';
 
 import { colors, typography, spacing, sheet } from '@/constants/theme';
 import type { RootStackParamList } from '@/app/_layout';
-import { createFocusTask, createHabitTask } from '@/db';
+import { createFocusTask, createHabitTask, isSnoozeActive } from '@/db';
+import { scheduleIntervalNotification } from '@/notifications/scheduler';
 import TaskForm, { TaskFormValue, QUOTA_PRESETS, INTERVAL_PRESETS } from '@/components/TaskForm';
 
 type CreateTaskRoute = RouteProp<RootStackParamList, 'CreateTask'>;
@@ -30,11 +31,16 @@ export default function CreateTaskModal() {
         notes: value.notes || undefined,
       });
     } else {
-      await createHabitTask({
+      const habitId = await createHabitTask({
         name: value.name,
         interval_minutes: value.intervalMinutes,
         notes: value.notes || undefined,
       });
+      // Phase 5: start the interval ping immediately, unless snooze is active
+      // (snooze keeps everything quiet until the user un-snoozes).
+      if (!(await isSnoozeActive())) {
+        await scheduleIntervalNotification(habitId, value.name, value.intervalMinutes);
+      }
     }
     // Home re-loads via useFocusEffect on return.
     navigation.goBack();

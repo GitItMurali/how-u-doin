@@ -9,16 +9,16 @@
  *
  * Persistence model (DB is source of truth):
  *  - startTimer  -> startSession() inserts an is_active row with started_at = now.
- *  - pause/stop  -> stopSession() records duration, then addLoggedMinutes() updates
+ *  - pause/stop  -> stopSession() records duration (seconds), then addLoggedSeconds() updates
  *                   daily_progress; quota check fires markComplete + Time's Up.
  *  - foreground  -> recoverTimer() reads getActiveSession() and resumes the live tick
  *                   from the stored started_at (survives backgrounding / cold-ish resume).
  *
  * Date rule: ALWAYS getCurrentDateString() (INTEGRATION-01) — never toISOString.
  *
- * NOTE (Phase 5 seam): the Time's Up *push notification* lives in Phase 5
- * (notifications/scheduler.ts is still a stub). For now we surface completion as a
- * toast and expose the next-task lookup result. Search "PHASE 5 SEAM" below.
+ * Phase 5: on quota completion this fires a real local 'times_up' push via
+ * notifications/scheduler.ts (unless snooze is active) AND surfaces a toast as
+ * immediate in-app feedback.
  */
 import React, {
   createContext,
@@ -36,11 +36,13 @@ import {
   getActiveSession,
   startSession,
   stopSession,
-  addLoggedMinutes,
+  addLoggedSeconds,
   getOrCreateProgress,
   markComplete,
   getNextPendingFocusTask,
+  isSnoozeActive,
 } from '@/db';
+import { fireTimesUpNotification } from '@/notifications/scheduler';
 
 // ─── Toast helper ───────────────────────────────────────────────────────────────
 // Android-first app. ToastAndroid is the paused/Time's-Up surface for now.
@@ -120,14 +122,15 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
     }
 
     const today = getCurrentDateString();
-    // Minimum 1 minute so a quick tap still logs something (matches
-    // recoverOrphanedSessions' min-1 convention).
-    const durationMinutes = Math.max(1, Math.round((Date.now() - startedAt) / 60000));
+    // Real elapsed SECONDS — no minimum floor. A 5-second session logs 5 seconds,
+    // not a full minute (fixes the old Math.max(1, ...) inflation where a quick
+    // pause counted as 1 min and repeated pauses kept stacking minutes).
+    const durationSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
 
     // 1) Close the session row (sessions.ts is source of truth for raw time).
-    await stopSession(sessionId, durationMinutes);
-    // 2) Roll the minutes into daily_progress (QA-04: stopSession CALLER MUST do this).
-    await addLoggedMinutes(taskId, today, durationMinutes);
+    await stopSession(sessionId, durationSeconds);
+    // 2) Roll the seconds into daily_progress (QA-04: stopSession CALLER MUST do this).
+    await addLoggedSeconds(taskId, today, durationSeconds);
 
     // 3) Quota check (pattern documented on addLoggedMinutes / stopSession).
     const task = await getTask(taskId);
@@ -135,7 +138,7 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
     if (
       task &&
       task.quota_minutes != null &&
-      progress.logged_minutes >= task.quota_minutes &&
+      progress.logged_seconds >= task.quota_minutes * 60 &&
       progress.is_complete === 0
     ) {
       await markComplete(taskId, today, task.quota_minutes);
@@ -143,16 +146,17 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
       // getNextPendingFocusTask only looks forward by sort_order — by design (QA-02).
       const next = await getNextPendingFocusTask(taskId, today);
 
-      // ── PHASE 5 SEAM ──────────────────────────────────────────────────────
-      // Replace this toast with a real local push via notifications/scheduler.ts
-      // (saveNotification + expo-notifications) when Phase 5 lands.
-      // Copy is finalized in project context: Time's Up / All Complete.
+      // Phase 5: fire a real local push (notification_type 'times_up', never
+      // rescheduled — SCHEMA-02) unless snooze is active. Keep the toast as
+      // immediate in-app feedback either way.
+      if (!(await isSnoozeActive())) {
+        await fireTimesUpNotification(taskId, task.name, next?.name ?? null);
+      }
       if (next) {
         toast(`${task.name} — time's up. Next up: ${next.name}.`);
       } else {
         toast('You finished everything. Take a breath.');
       }
-      // ──────────────────────────────────────────────────────────────────────
     }
 
     sessionIdRef.current = null;

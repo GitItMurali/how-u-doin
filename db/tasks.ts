@@ -45,6 +45,7 @@ export interface Task {
 /** Task row joined with today's daily_progress (for home screen rendering). */
 export interface TaskWithProgress extends Task {
   logged_minutes: number;
+  logged_seconds: number;
   is_complete: number;             // 0 | 1
 }
 
@@ -93,6 +94,7 @@ export async function getFocusTasks(today: string): Promise<TaskWithProgress[]> 
       t.sort_order, t.is_archived, t.archived_at,
       t.is_deleted, t.created_at, t.updated_at,
       COALESCE(dp.logged_minutes, 0) AS logged_minutes,
+      COALESCE(dp.logged_seconds, 0) AS logged_seconds,
       COALESCE(dp.is_complete,    0) AS is_complete
     FROM tasks t
     LEFT JOIN daily_progress dp

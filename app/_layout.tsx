@@ -3,10 +3,14 @@
  * Root layout — DB init, font loading, AppProvider, navigation root.
  * Phase 2: Navigation structure.
  * Phase 3: initDb() gate added — DB must be ready before any screen queries it.
+ * Phase 5: notification runtime init + tap/observer wiring (navigationRef).
  */
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View, Text } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -19,11 +23,14 @@ import {
 
 import { AppProvider } from '@/context/AppContext';
 import { TimerProvider } from '@/hooks/useTimer';
+import { SnoozeProvider } from '@/hooks/snooze';
 import TabNavigator from '@/components/navigation/TabNavigator';
 import CreateTaskModal from '@/app/task/create';
 import EditTaskModal from '@/app/task/[id]';
 import { colors, typography, spacing } from '@/constants/theme';
 import { initDb } from '@/db';
+import { initNotifications } from '@/notifications/setup';
+import { useNotificationObserver } from '@/notifications/useNotificationObserver';
 
 export type RootStackParamList = {
   Tabs: undefined;
@@ -32,6 +39,9 @@ export type RootStackParamList = {
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
+
+// Navigation ref so notification taps can route from outside the React tree.
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -60,6 +70,16 @@ export default function RootLayout() {
     };
   }, []);
 
+  // Phase 5: notification runtime setup once the DB is ready (handler + channel
+  // + permission). Fire-and-forget; scheduling happens on task create / timer.
+  useEffect(() => {
+    if (!dbReady) return;
+    void initNotifications();
+  }, [dbReady]);
+
+  // Phase 5: observe notification taps (routing) + interval fires (reschedule).
+  useNotificationObserver(navigationRef);
+
   if (dbError) {
     return (
       <View style={styles.center}>
@@ -82,27 +102,29 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <AppProvider>
           <TimerProvider>
-          <NavigationContainer>
-            <Stack.Navigator screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="Tabs" component={TabNavigator} />
-              <Stack.Screen
-                name="CreateTask"
-                component={CreateTaskModal}
-                options={{
-                  presentation: 'modal',
-                  cardStyle: { backgroundColor: 'transparent' },
-                }}
-              />
-              <Stack.Screen
-                name="EditTask"
-                component={EditTaskModal}
-                options={{
-                  presentation: 'modal',
-                  cardStyle: { backgroundColor: 'transparent' },
-                }}
-              />
-            </Stack.Navigator>
-          </NavigationContainer>
+            <SnoozeProvider>
+              <NavigationContainer ref={navigationRef}>
+                <Stack.Navigator screenOptions={{ headerShown: false }}>
+                  <Stack.Screen name="Tabs" component={TabNavigator} />
+                  <Stack.Screen
+                    name="CreateTask"
+                    component={CreateTaskModal}
+                    options={{
+                      presentation: 'modal',
+                      cardStyle: { backgroundColor: 'transparent' },
+                    }}
+                  />
+                  <Stack.Screen
+                    name="EditTask"
+                    component={EditTaskModal}
+                    options={{
+                      presentation: 'modal',
+                      cardStyle: { backgroundColor: 'transparent' },
+                    }}
+                  />
+                </Stack.Navigator>
+              </NavigationContainer>
+            </SnoozeProvider>
           </TimerProvider>
         </AppProvider>
       </SafeAreaProvider>

@@ -26,7 +26,7 @@ export { getActiveSession, getSessionsForDate,
          recoverOrphanedSessions, addManualSession } from './sessions';
 
 export type { DailyProgress, HistoryRow } from './progress';
-export { getOrCreateProgress, setLoggedMinutes, addLoggedMinutes,
+export { getOrCreateProgress, setLoggedMinutes, addLoggedMinutes, addLoggedSeconds,
          markComplete, recordIntervalFired, resetDailyProgress,
          getHistory, getTodayHistory } from './progress';
 

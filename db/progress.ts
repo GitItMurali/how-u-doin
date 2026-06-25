@@ -11,7 +11,8 @@ export interface DailyProgress {
   id: number;
   task_id: number;
   date: string;
-  logged_minutes: number;
+  logged_minutes: number;          // derived: floor(logged_seconds / 60)
+  logged_seconds: number;          // source of truth
   is_complete: number;             // 0 | 1
   interval_count: number;
   last_interval_fired_at: number | null;
@@ -43,9 +44,9 @@ export async function getOrCreateProgress(
 
   await db.runAsync(`
     INSERT OR IGNORE INTO daily_progress
-      (task_id, date, logged_minutes, is_complete,
+      (task_id, date, logged_minutes, logged_seconds, is_complete,
        interval_count, last_interval_fired_at, created_at, updated_at)
-    VALUES (?, ?, 0, 0, 0, NULL, ?, ?);
+    VALUES (?, ?, 0, 0, 0, 0, NULL, ?, ?);
   `, [taskId, date, now, now]);
 
   return db.getFirstAsync<DailyProgress>(
@@ -92,15 +93,32 @@ export async function addLoggedMinutes(
   date: string,
   minutesToAdd: number
 ): Promise<void> {
+  // Delegate to the seconds-granular primary so logged_minutes stays derived.
+  await addLoggedSeconds(taskId, date, Math.round(minutesToAdd * 60));
+}
+
+/**
+ * Add SECONDS to a task's logged total for today. PRIMARY time-tracking write.
+ * logged_seconds is the source of truth; logged_minutes is kept in sync as
+ * floor(logged_seconds / 60) so all existing minute-based readers stay correct.
+ * No minimum floor — a 5-second session logs exactly 5 seconds (fixes the old
+ * Math.max(1, ...) inflation where a quick pause counted as a full minute).
+ */
+export async function addLoggedSeconds(
+  taskId: number,
+  date: string,
+  secondsToAdd: number
+): Promise<void> {
   const db = getDb();
   await getOrCreateProgress(taskId, date);
 
   await db.runAsync(`
     UPDATE daily_progress
-    SET logged_minutes = logged_minutes + ?,
+    SET logged_seconds = logged_seconds + ?,
+        logged_minutes = (logged_seconds + ?) / 60,
         updated_at     = ?
     WHERE task_id = ? AND date = ?;
-  `, [minutesToAdd, Date.now(), taskId, date]);
+  `, [secondsToAdd, secondsToAdd, Date.now(), taskId, date]);
 }
 
 /**
@@ -117,13 +135,15 @@ export async function markComplete(
   const now = Date.now();
 
   if (quotaMinutes !== undefined) {
+    const quotaSeconds = quotaMinutes * 60;
     await db.runAsync(`
       UPDATE daily_progress
       SET is_complete    = 1,
+          logged_seconds = MAX(logged_seconds, ?),
           logged_minutes = MAX(logged_minutes, ?),
           updated_at     = ?
       WHERE task_id = ? AND date = ?;
-    `, [quotaMinutes, now, taskId, date]);
+    `, [quotaSeconds, quotaMinutes, now, taskId, date]);
   } else {
     await db.runAsync(`
       UPDATE daily_progress
