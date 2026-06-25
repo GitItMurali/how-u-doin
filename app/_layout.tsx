@@ -18,6 +18,7 @@ import {
 } from '@expo-google-fonts/dm-sans';
 
 import { AppProvider } from '@/context/AppContext';
+import { TimerProvider } from '@/hooks/useTimer';
 import TabNavigator from '@/components/navigation/TabNavigator';
 import CreateTaskModal from '@/app/task/create';
 import EditTaskModal from '@/app/task/[id]';
@@ -80,6 +81,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AppProvider>
+          <TimerProvider>
           <NavigationContainer>
             <Stack.Navigator screenOptions={{ headerShown: false }}>
               <Stack.Screen name="Tabs" component={TabNavigator} />
@@ -101,6 +103,7 @@ export default function RootLayout() {
               />
             </Stack.Navigator>
           </NavigationContainer>
+          </TimerProvider>
         </AppProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

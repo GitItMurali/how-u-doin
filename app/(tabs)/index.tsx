@@ -8,7 +8,7 @@
  *  - types imported from @/db barrel (no redefinition)
  *  - reorder uses reorderFocusTasks() single-transaction (BUILD note: no new deps)
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,8 @@ import {
   StyleSheet,
   StatusBar,
   Alert,
+  ToastAndroid,
+  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -35,11 +37,16 @@ import {
   getHabitTasks,
   reorderFocusTasks,
   deleteTask,
+  getTask,
+  getOrCreateProgress,
+  markComplete,
+  getNextPendingFocusTask,
 } from '@/db';
 import type { TaskWithProgress, HabitWithProgress, ReorderEntry } from '@/db';
 import FocusTaskCard from '@/components/FocusTaskCard';
 import HabitTaskCard from '@/components/HabitTaskCard';
 import EmptyState from '@/components/EmptyState';
+import { useTimer } from '@/hooks/useTimer';
 
 type HomeNavProp = StackNavigationProp<RootStackParamList>;
 type ActiveTab = 'focus' | 'habit';
@@ -48,9 +55,18 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<HomeNavProp>();
   const [activeTab, setActiveTab] = useState<ActiveTab>('focus');
+  const { activeTaskId, elapsedSeconds, toggleTimer, pauseTimer, recoverTimer } = useTimer();
 
   const [focusTasks, setFocusTasks] = useState<TaskWithProgress[]>([]);
   const [habitTasks, setHabitTasks] = useState<HabitWithProgress[]>([]);
+
+  // Stable id -> priority map. Recomputed only when the order actually changes,
+  // so renderFocusItem's identity stays stable during a drag (no full remount flicker).
+  const priorityById = useMemo(() => {
+    const m: Record<number, number> = {};
+    focusTasks.forEach((t, i) => { m[t.id] = i + 1; });
+    return m;
+  }, [focusTasks]);
 
   const loadTasks = useCallback(async () => {
     const today = getCurrentDateString();
@@ -66,7 +82,8 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       loadTasks();
-    }, [loadTasks]),
+      recoverTimer();
+    }, [loadTasks, recoverTimer]),
   );
 
   function handleFAB() {
@@ -108,21 +125,61 @@ export default function HomeScreen() {
     await reorderFocusTasks(newOrder);
   }
 
+  function toast(message: string) {
+    if (Platform.OS === 'android') ToastAndroid.show(message, ToastAndroid.SHORT);
+  }
+
+  // Toggle this task's timer; refresh persisted progress after a pause/stop.
+  async function handleToggle(taskId: number) {
+    const wasRunning = activeTaskId === taskId;
+    await toggleTimer(taskId);
+    if (wasRunning) {
+      // Just paused/stopped — daily_progress changed; reload to show new totals.
+      await loadTasks();
+    }
+  }
+
+  // Manual "mark complete" from the check button.
+  // Pauses the timer first if this task is running (so its minutes are logged),
+  // then marks complete and fires the Time's Up surface (Phase 5: real push).
+  async function handleComplete(taskId: number, name: string) {
+    if (activeTaskId === taskId) {
+      await pauseTimer(taskId); // logs elapsed; may already mark complete on quota hit
+    }
+    const today = getCurrentDateString();
+    const progress = await getOrCreateProgress(taskId, today);
+    if (progress.is_complete === 0) {
+      const task = await getTask(taskId);
+      await markComplete(taskId, today, task?.quota_minutes ?? undefined);
+      // getNextPendingFocusTask only looks forward by sort_order — by design (QA-02).
+      const next = await getNextPendingFocusTask(taskId, today);
+      // PHASE 5 SEAM: replace toast with a real local push (notifications/scheduler.ts).
+      toast(next ? `${name} — time's up. Next up: ${next.name}.` : 'You finished everything. Take a breath.');
+    }
+    await loadTasks();
+  }
+
   const renderFocusItem = useCallback(
-    ({ item, drag, isActive, getIndex }: RenderItemParams<TaskWithProgress>) => {
-      const index = getIndex();
+    ({ item, drag, isActive }: RenderItemParams<TaskWithProgress>) => {
+      // Priority from a stable per-order map (avoids stale getIndex() duplicates
+      // AND avoids re-creating this callback on every focusTasks change).
+      const priority = priorityById[item.id] ?? 0;
       return (
         <FocusTaskCard
           task={item}
-          priority={(index ?? 0) + 1}
+          priority={priority}
           onPress={() => openEdit(item.id)}
           onDelete={() => confirmDelete(item.id, item.name)}
           onDragStart={drag}
           isActive={isActive}
+          isRunning={activeTaskId === item.id}
+          liveSeconds={activeTaskId === item.id ? elapsedSeconds : 0}
+          onToggleTimer={() => handleToggle(item.id)}
+          onComplete={() => handleComplete(item.id, item.name)}
         />
       );
     },
-    [],
+    [priorityById, activeTaskId, elapsedSeconds],
   );
 
   return (

@@ -1,8 +1,8 @@
 /**
  * components/FocusTaskCard.tsx
- * Focus task card — priority number, name, static progress bar, time label,
- * timer + check buttons (Phase 4 no-ops), drag handle, swipe-left to delete.
- * Phase 3.
+ * Focus task card — priority number, name, LIVE progress bar, time label,
+ * play/pause + check buttons, drag handle, swipe-left to delete.
+ * Phase 4: timer wired (play/pause toggles the live timer; check marks complete).
  *
  * Design tokens only (constants/theme.ts) — no magic numbers.
  */
@@ -15,7 +15,7 @@ import {
   Animated,
 } from 'react-native';
 import { Swipeable } from 'react-native-gesture-handler';
-import { Play, Check, DotsSixVertical, Trash } from 'phosphor-react-native';
+import { Play, Pause, Check, DotsSixVertical, Trash } from 'phosphor-react-native';
 
 import { colors, typography, spacing, card, progressBar, swipe } from '@/constants/theme';
 import type { TaskWithProgress } from '@/db';
@@ -27,6 +27,11 @@ interface FocusTaskCardProps {
   onDelete: () => void;        // confirm + deleteTask (handled by parent)
   onDragStart: () => void;     // long-press drag handle
   isActive: boolean;           // true while being dragged
+  // ── Phase 4 timer wiring ──
+  isRunning: boolean;          // this card's timer is the active one
+  liveSeconds: number;         // live elapsed seconds while running (0 otherwise)
+  onToggleTimer: () => void;   // start/pause this task's timer
+  onComplete: () => void;      // mark task complete now
 }
 
 export default function FocusTaskCard({
@@ -36,11 +41,26 @@ export default function FocusTaskCard({
   onDelete,
   onDragStart,
   isActive,
+  isRunning,
+  liveSeconds,
+  onToggleTimer,
+  onComplete,
 }: FocusTaskCardProps) {
   const quota = task.quota_minutes ?? 0;
-  const logged = task.logged_minutes ?? 0;
-  const complete = task.is_complete === 1 || (quota > 0 && logged >= quota);
-  const pct = quota > 0 ? Math.min(1, logged / quota) : 0;
+  const baseLogged = task.logged_minutes ?? 0;
+
+  // While running, show provisional progress = persisted minutes + live elapsed.
+  const liveMinutes = isRunning ? liveSeconds / 60 : 0;
+  const displayMinutes = baseLogged + liveMinutes;
+
+  const complete = task.is_complete === 1 || (quota > 0 && displayMinutes >= quota);
+  const pct = quota > 0 ? Math.min(1, displayMinutes / quota) : 0;
+
+  // Time label: "12:34 / 25m" while running, "12m / 25m" otherwise.
+  const runningLabel = formatClock(liveSeconds);
+  const timeLabel = isRunning
+    ? `${runningLabel}  (+${baseLogged}m)  /  ${quota}m`
+    : `${baseLogged}m / ${quota}m`;
 
   function renderRightActions(
     _progress: Animated.AnimatedInterpolation<number>,
@@ -67,6 +87,7 @@ export default function FocusTaskCard({
           styles.card,
           { borderLeftColor: complete ? colors.success : colors.primary },
           isActive && styles.cardActive,
+          isRunning && styles.cardRunning,
         ]}
         onPress={onPress}
         activeOpacity={0.9}
@@ -82,7 +103,7 @@ export default function FocusTaskCard({
             {task.name}
           </Text>
 
-          {/* Static progress bar (Phase 4 makes it live) */}
+          {/* Live progress bar */}
           <View style={styles.progressTrack}>
             <View
               style={[
@@ -97,24 +118,41 @@ export default function FocusTaskCard({
             />
           </View>
 
-          <Text style={styles.timeLabel}>
-            {logged}m / {quota}m
-          </Text>
+          <Text style={styles.timeLabel}>{timeLabel}</Text>
         </View>
 
-        {/* Action buttons (Phase 4: wire timer + completion) */}
+        {/* Action buttons */}
         <View style={styles.actions}>
-          <TouchableOpacity
-            style={styles.iconButton}
-            hitSlop={8}
-            onPress={() => { /* Phase 4: start/stop timer */ }}
-          >
-            {complete ? (
+          {complete ? (
+            // Completed: show a static success check (no toggle).
+            <View style={styles.iconButton}>
               <Check size={22} color={colors.success} weight="bold" />
-            ) : (
-              <Play size={22} color={colors.primary} weight="fill" />
-            )}
-          </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              {/* Play / Pause toggle */}
+              <TouchableOpacity
+                style={styles.iconButton}
+                hitSlop={8}
+                onPress={onToggleTimer}
+              >
+                {isRunning ? (
+                  <Pause size={22} color={colors.primary} weight="fill" />
+                ) : (
+                  <Play size={22} color={colors.primary} weight="fill" />
+                )}
+              </TouchableOpacity>
+
+              {/* Mark complete */}
+              <TouchableOpacity
+                style={styles.iconButton}
+                hitSlop={8}
+                onPress={onComplete}
+              >
+                <Check size={22} color={colors.textSecondary} weight="bold" />
+              </TouchableOpacity>
+            </>
+          )}
 
           {/* Drag handle — long-press to reorder */}
           <TouchableOpacity
@@ -129,6 +167,16 @@ export default function FocusTaskCard({
       </TouchableOpacity>
     </Swipeable>
   );
+}
+
+/** Seconds -> "M:SS" (or "H:MM:SS" past an hour). */
+function formatClock(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
 
 const styles = StyleSheet.create({
@@ -146,6 +194,9 @@ const styles = StyleSheet.create({
   cardActive: {
     opacity: 0.9,
     transform: [{ scale: 1.02 }],
+  },
+  cardRunning: {
+    borderLeftColor: colors.accent,
   },
   priorityWrap: {
     width: 28,
