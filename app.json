@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "How U Doin",
+    "slug": "how-u-doin",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.howudoin.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "backgroundColor": "#F5ECD7"
+      },
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED",
+        "VIBRATE",
+        "POST_NOTIFICATIONS",
+        "SCHEDULE_EXACT_ALARM"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#C0622F",
+          "defaultChannel": "default"
+        }
+      ],
+      [
+        "expo-background-fetch"
+      ],
+      [
+        "expo-task-manager"
+      ],
+      [
+        "expo-local-authentication"
+      ],
+      "expo-font",
+      "expo-secure-store",
+      "expo-sqlite"
+    ]
+  }
+}
