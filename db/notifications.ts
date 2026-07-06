@@ -20,15 +20,6 @@ export interface NotificationRecord {
   created_at: number;
 }
 
-/**
- * NotificationRecord extended with task fields needed for snooze-resume rescheduling.
- * Returned by getCancelledIntervalNotifications().
- */
-export interface CancelledIntervalNotification extends NotificationRecord {
-  interval_minutes: number;
-  name: string;
-}
-
 // ─── Writes ───────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -135,28 +126,6 @@ export async function getNotificationByExpoId(
     'SELECT * FROM notification_schedule WHERE notification_id = ? LIMIT 1;',
     [notificationId]
   );
-}
-
-/**
- * Get all cancelled INTERVAL notifications that still have a future fire time.
- * Used when snooze is turned off to know which habit notifications to reschedule.
- *
- * Note: 'times_up' notifications are NOT rescheduled -- they are event-driven
- * (fire when quota is hit, not on a time schedule).
- */
-export async function getCancelledIntervalNotifications(
-  now: number
-): Promise<CancelledIntervalNotification[]> {
-  const db = getDb();
-  return db.getAllAsync<CancelledIntervalNotification>(`
-    SELECT ns.*, t.interval_minutes, t.name
-    FROM notification_schedule ns
-    JOIN tasks t ON t.id = ns.task_id
-    WHERE ns.notification_type = 'interval'
-      AND ns.is_active         = 0
-      AND ns.scheduled_for     > ?
-    ORDER BY ns.scheduled_for ASC;
-  `, [now]);
 }
 
 /**

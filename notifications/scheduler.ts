@@ -4,13 +4,14 @@
  * SQLite `notification_schedule` table (db/notifications.ts) in sync.
  *
  * Two notification kinds (see SCHEMA-02 in issues log):
- *   - 'interval' : habit pings on a repeating cadence. Time-scheduled, and the
- *                  ONLY kind that gets rescheduled on snooze-resume / daily reset.
+ *   - 'interval' : habit pings on a repeating cadence. Time-scheduled; restarted
+ *                  fresh (scheduleAllHabitNotifications) on snooze-resume and at
+ *                  the daily reset.
  *   - 'times_up' : fired when a Focus quota is hit. Event-driven (fires now),
  *                  NEVER rescheduled by time.
  *
  * Every expo call is mirrored into SQLite so we can bulk-cancel on snooze and
- * reschedule on resume without asking the OS what's pending.
+ * schedule fresh on resume without asking the OS what's pending.
  */
 
 import * as Notifications from 'expo-notifications';
@@ -20,7 +21,6 @@ import {
   cancelNotificationsForTask,
   cancelAllNotifications as dbCancelAllNotifications,
   getActiveNotificationsForTask,
-  getCancelledIntervalNotifications,
 } from '@/db/notifications';
 import { getActiveHabitTasksBasic, getTask } from '@/db/tasks';
 
@@ -34,7 +34,8 @@ const ANDROID_CHANNEL_ID = 'default';
  * Returns the expo notification id, or null if nothing was scheduled.
  *
  * CALLER MUST cancel any existing interval notifications for this task first
- * (use cancelIntervalForTask) if the interval changed — otherwise duplicates ping.
+ * (use cancelNotificationsForTaskFull) if the interval changed — otherwise
+ * duplicates ping.
  */
 export async function scheduleIntervalNotification(
   taskId: number,
@@ -51,7 +52,6 @@ export async function scheduleIntervalNotification(
       title: name,
       body: `Time for ${name}.`,
       data: { taskId, notificationType: 'interval' },
-      ...(ANDROID_CHANNEL_ID ? { channelId: ANDROID_CHANNEL_ID } : {}),
     },
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -88,7 +88,8 @@ export async function cancelScheduledNotification(notificationId: string): Promi
 
 /**
  * Fire the Time's Up push immediately (a Focus quota was just hit).
- * Event-driven, so we use a null trigger (deliver now) and record it as
+ * Event-driven: a channel-aware trigger delivers NOW on our Android channel
+ * (QA D5 — channelId is a trigger concern, not a content field). Recorded as
  * 'times_up' with scheduled_for = now. NEVER rescheduled (SCHEMA-02).
  *
  * @param nextName  name of the next pending focus task, or null if all done.
@@ -107,9 +108,9 @@ export async function fireTimesUpNotification(
       title: nextName ? "Time's up" : 'All done',
       body,
       data: { taskId, notificationType: 'times_up' },
-      ...(ANDROID_CHANNEL_ID ? { channelId: ANDROID_CHANNEL_ID } : {}),
     },
-    trigger: null, // deliver immediately
+    // Channel-aware immediate trigger: delivers now, on our channel.
+    trigger: { channelId: ANDROID_CHANNEL_ID },
   });
 
   await saveNotification(taskId, notificationId, 'times_up', Date.now());
@@ -119,9 +120,8 @@ export async function fireTimesUpNotification(
 // ─── Bulk ops (snooze / daily reset) ────────────────────────────────────────
 
 /**
- * Cancel ALL scheduled notifications (expo + DB). Used when snooze activates.
- * DB records stay rows (is_active=0) so getCancelledIntervalNotifications can
- * find the future interval ones to reschedule on resume.
+ * Cancel ALL scheduled notifications (expo + DB). Used when snooze activates
+ * and as step 3 of the daily reset.
  */
 export async function cancelAllScheduledNotifications(): Promise<void> {
   await Notifications.cancelAllScheduledNotificationsAsync();
@@ -129,29 +129,10 @@ export async function cancelAllScheduledNotifications(): Promise<void> {
 }
 
 /**
- * Reschedule all interval notifications that were cancelled by snooze and still
- * have a future fire time. Used when snooze is turned off.
- *
- * We reschedule from NOW using each task's interval_minutes (not the stale
- * scheduled_for) so the cadence restarts cleanly after the snooze window.
- * times_up notifications are intentionally excluded (SCHEMA-02).
- */
-export async function rescheduleAllIntervalNotifications(): Promise<void> {
-  const now = Date.now();
-  const cancelled = await getCancelledIntervalNotifications(now);
-
-  // De-dupe by task — a task may have multiple stale interval rows; reschedule once.
-  const seen = new Set<number>();
-  for (const rec of cancelled) {
-    if (seen.has(rec.task_id)) continue;
-    seen.add(rec.task_id);
-    await scheduleIntervalNotification(rec.task_id, rec.name, rec.interval_minutes);
-  }
-}
-
-/**
  * Schedule a fresh interval notification for every active habit task.
- * Used by the daily-reset handler (Phase 6) and as a belt-and-braces resume.
+ * Used on snooze-resume (QA A2 — restarts cadence from now for ALL active
+ * habits, even those whose window elapsed during the snooze; also can never
+ * resurrect deleted/archived tasks, QA A3) and by the Phase 6 daily reset.
  */
 export async function scheduleAllHabitNotifications(): Promise<void> {
   const habits = await getActiveHabitTasksBasic();
@@ -165,10 +146,19 @@ export async function scheduleAllHabitNotifications(): Promise<void> {
 /**
  * When an interval notification fires, schedule the NEXT one so the habit keeps
  * pinging. Called from the notification-received handler in the app root.
- * Looks the task up fresh so an archived/deleted habit stops pinging.
+ * Looks the task up fresh — and checks soft-delete/archive flags (QA A4) — so a
+ * deleted or archived habit genuinely stops pinging even if it disappears
+ * between the fire and this handler.
  */
 export async function rescheduleAfterIntervalFired(taskId: number): Promise<void> {
   const task = await getTask(taskId);
-  if (!task || task.task_type !== 'habit') return;
+  if (
+    !task ||
+    task.task_type !== 'habit' ||
+    task.is_deleted === 1 ||
+    task.is_archived === 1
+  ) {
+    return;
+  }
   await scheduleIntervalNotification(task.id, task.name, task.interval_minutes);
 }

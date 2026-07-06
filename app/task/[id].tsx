@@ -50,14 +50,14 @@ export default function EditTaskModal() {
     if (value.type === 'focus') {
       await updateTask(taskId, {
         name: value.name,
-        notes: value.notes || undefined,
+        notes: value.notes === '' ? null : value.notes,
         quota_minutes: value.quotaMinutes,
       });
     } else {
       const intervalChanged = task?.interval_minutes !== value.intervalMinutes;
       await updateTask(taskId, {
         name: value.name,
-        notes: value.notes || undefined,
+        notes: value.notes === '' ? null : value.notes,
         interval_minutes: value.intervalMinutes,
       });
       // INTEGRATION-06 contract: if the interval changed, cancel the old ping(s)

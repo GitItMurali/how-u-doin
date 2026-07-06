@@ -38,10 +38,11 @@ import {
   reorderFocusTasks,
   deleteTask,
   getTask,
-
   getOrCreateProgress,
   markComplete,
   getNextPendingFocusTask,
+  isSnoozeActive,
+  recordIntervalFired,
 } from '@/db';
 import type { TaskWithProgress, HabitWithProgress, ReorderEntry } from '@/db';
 import FocusTaskCard from '@/components/FocusTaskCard';
@@ -112,6 +113,11 @@ export default function HomeScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
+            // QA A6 — stop this task's timer first so its session is closed and
+            // elapsed time logged before the task disappears.
+            if (activeTaskId === taskId) {
+              await pauseTimer(taskId);
+            }
             // INTEGRATION-06 — deleteTask CALLER MUST cancel notifications first.
             await cancelNotificationsForTaskFull(taskId);
             await deleteTask(taskId);
@@ -162,13 +168,20 @@ export default function HomeScreen() {
       // getNextPendingFocusTask only looks forward by sort_order — by design (QA-02).
       const next = await getNextPendingFocusTask(taskId, today);
       // Phase 5: fire a real local push (notification_type 'times_up', never
-      // rescheduled — SCHEMA-02), unless snooze is active. Keep the toast as
-      // immediate in-app feedback.
-      if (!snoozed) {
+      // rescheduled — SCHEMA-02), unless snooze is active. QA A5: read snooze
+      // from the DB, not the snoozed prop — this callback can be captured stale
+      // by the memoized renderFocusItem. Keep the toast as in-app feedback.
+      if (!(await isSnoozeActive())) {
         await fireTimesUpNotification(taskId, name, next?.name ?? null);
       }
       toast(next ? `${name} — time's up. Next up: ${next.name}.` : 'You finished everything. Take a breath.');
     }
+    await loadTasks();
+  }
+
+  // Habit check-off (QA A1): count one interval as done and refresh the card.
+  async function handleHabitCheck(taskId: number) {
+    await recordIntervalFired(taskId, getCurrentDateString());
     await loadTasks();
   }
 
@@ -269,6 +282,7 @@ export default function HomeScreen() {
               task={item}
               onPress={() => openEdit(item.id)}
               onDelete={() => confirmDelete(item.id, item.name)}
+              onCheck={() => handleHabitCheck(item.id)}
             />
           )}
           contentContainerStyle={styles.listContent}

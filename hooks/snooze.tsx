@@ -32,7 +32,7 @@ import { isSnoozeActive, setSnoozeActive } from '@/db';
 import { useTimer } from '@/hooks/useTimer';
 import {
   cancelAllScheduledNotifications,
-  rescheduleAllIntervalNotifications,
+  scheduleAllHabitNotifications,
 } from '@/notifications/scheduler';
 
 interface SnoozeContextValue {
@@ -75,7 +75,10 @@ export function SnoozeProvider({ children }: { children: React.ReactNode }) {
   }, [activeTaskId, pauseTimer]);
 
   const deactivateSnooze = useCallback(async () => {
-    await rescheduleAllIntervalNotifications();
+    // QA A2/A3: schedule fresh-from-now for EVERY active habit. The old
+    // 'reschedule cancelled future rows' approach silently dropped any habit
+    // whose window elapsed during the snooze, and could resurrect deleted tasks.
+    await scheduleAllHabitNotifications();
     await setSnoozeActive(false);
     setSnoozed(false);
   }, []);

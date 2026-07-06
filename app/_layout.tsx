@@ -4,6 +4,7 @@
  * Phase 2: Navigation structure.
  * Phase 3: initDb() gate added — DB must be ready before any screen queries it.
  * Phase 5: notification runtime init + tap/observer wiring (navigationRef).
+ * Phase 6: daily reset — background-fetch registration + foreground safety net.
  */
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View, Text } from 'react-native';
@@ -21,9 +22,9 @@ import {
   DMSans_700Bold,
 } from '@expo-google-fonts/dm-sans';
 
-import { AppProvider } from '@/context/AppContext';
-import { TimerProvider } from '@/hooks/useTimer';
-import { SnoozeProvider } from '@/hooks/snooze';
+import { TimerProvider, useTimer } from '@/hooks/useTimer';
+import { SnoozeProvider, useSnooze } from '@/hooks/snooze';
+import { useDailyReset } from '@/hooks/useDailyReset';
 import TabNavigator from '@/components/navigation/TabNavigator';
 import CreateTaskModal from '@/app/task/create';
 import EditTaskModal from '@/app/task/[id]';
@@ -31,6 +32,9 @@ import { colors, typography, spacing } from '@/constants/theme';
 import { initDb } from '@/db';
 import { initNotifications } from '@/notifications/setup';
 import { useNotificationObserver } from '@/notifications/useNotificationObserver';
+// Side-effect import: defines the headless background task at module top level
+// (required by expo-task-manager), and exposes the idempotent register call.
+import { registerDailyResetTask } from '@/notifications/backgroundReset';
 
 export type RootStackParamList = {
   Tabs: undefined;
@@ -42,6 +46,35 @@ const Stack = createStackNavigator<RootStackParamList>();
 
 // Navigation ref so notification taps can route from outside the React tree.
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
+
+/**
+ * Phase 6 — foreground daily-reset safety net. Renders nothing.
+ * Lives INSIDE TimerProvider + SnoozeProvider so it can:
+ *   - pause a running Focus timer BEFORE the reset closes its session
+ *     (elapsed time gets logged instead of orphan-recovered),
+ *   - re-sync the snooze UI AFTER the reset cleared snooze_active in the DB
+ *     (deactivateSnooze after runReset is a safe no-op reschedule — the
+ *     notification_schedule table was just wiped and freshly rescheduled).
+ */
+function DailyResetRunner() {
+  const { activeTaskId, pauseTimer } = useTimer();
+  const { snoozed, deactivateSnooze } = useSnooze();
+
+  useDailyReset({
+    beforeReset: async () => {
+      if (activeTaskId !== null) {
+        await pauseTimer(activeTaskId);
+      }
+    },
+    afterReset: async () => {
+      if (snoozed) {
+        await deactivateSnooze();
+      }
+    },
+  });
+
+  return null;
+}
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
@@ -71,10 +104,12 @@ export default function RootLayout() {
   }, []);
 
   // Phase 5: notification runtime setup once the DB is ready (handler + channel
-  // + permission). Fire-and-forget; scheduling happens on task create / timer.
+  // + permission). Phase 6: register the background daily-reset task (idempotent,
+  // interval-based — never needs re-registration when reset_time changes).
   useEffect(() => {
     if (!dbReady) return;
     void initNotifications();
+    void registerDailyResetTask();
   }, [dbReady]);
 
   // Phase 5: observe notification taps (routing) + interval fires (reschedule).
@@ -100,9 +135,9 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <AppProvider>
-          <TimerProvider>
+        <TimerProvider>
             <SnoozeProvider>
+              <DailyResetRunner />
               <NavigationContainer ref={navigationRef}>
                 <Stack.Navigator screenOptions={{ headerShown: false }}>
                   <Stack.Screen name="Tabs" component={TabNavigator} />
@@ -125,8 +160,7 @@ export default function RootLayout() {
                 </Stack.Navigator>
               </NavigationContainer>
             </SnoozeProvider>
-          </TimerProvider>
-        </AppProvider>
+        </TimerProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

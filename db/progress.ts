@@ -58,26 +58,6 @@ export async function getOrCreateProgress(
 // ─── Time tracking ────────────────────────────────────────────────────────────
 
 /**
- * Set the total logged_minutes for a task today.
- * Caller should sum all session durations before calling (sessions.ts is source of truth).
- */
-export async function setLoggedMinutes(
-  taskId: number,
-  date: string,
-  totalMinutes: number
-): Promise<void> {
-  const db = getDb();
-  await getOrCreateProgress(taskId, date);
-
-  await db.runAsync(`
-    UPDATE daily_progress
-    SET logged_minutes = ?,
-        updated_at     = ?
-    WHERE task_id = ? AND date = ?;
-  `, [totalMinutes, Date.now(), taskId, date]);
-}
-
-/**
  * Add minutes to a task's logged total for today.
  * Used after a timer session stops or a manual session is added.
  *

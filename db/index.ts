@@ -26,7 +26,7 @@ export { getActiveSession, getSessionsForDate,
          recoverOrphanedSessions, addManualSession } from './sessions';
 
 export type { DailyProgress, HistoryRow } from './progress';
-export { getOrCreateProgress, setLoggedMinutes, addLoggedMinutes, addLoggedSeconds,
+export { getOrCreateProgress, addLoggedMinutes, addLoggedSeconds,
          markComplete, recordIntervalFired, resetDailyProgress,
          getHistory, getTodayHistory } from './progress';
 
@@ -39,10 +39,10 @@ export { getSetting, setSetting,
          isOnboardingComplete, setOnboardingComplete,
          getAllSettings } from './settings';
 
-export type { NotificationType, NotificationRecord, CancelledIntervalNotification } from './notifications';
+export type { NotificationType, NotificationRecord } from './notifications';
 export { saveNotification, cancelNotificationById,
          cancelNotificationsForTask, cancelAllNotifications,
          clearAllNotificationRecords,
-         getActiveNotificationsForTask, getCancelledIntervalNotifications,
+         getActiveNotificationsForTask,
          getNotificationByExpoId,
          getAllActiveNotifications } from './notifications';

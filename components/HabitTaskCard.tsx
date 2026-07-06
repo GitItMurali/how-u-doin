@@ -1,7 +1,7 @@
 /**
  * components/HabitTaskCard.tsx
  * Habit task card — name, interval badge ("every 15 min"), next-fire hint,
- * check-off button (Phase 5 no-op), swipe-left to delete.
+ * check-off button (records one interval done today), swipe-left to delete.
  * Phase 3.
  *
  * Design tokens only (constants/theme.ts).
@@ -24,6 +24,7 @@ interface HabitTaskCardProps {
   task: HabitWithProgress;
   onPress: () => void;     // open edit modal
   onDelete: () => void;    // confirm + deleteTask (handled by parent)
+  onCheck: () => void;     // record one interval done today (QA A1)
 }
 
 function intervalLabel(mins: number | null): string {
@@ -35,7 +36,7 @@ function intervalLabel(mins: number | null): string {
   return `every ${mins} min`;
 }
 
-export default function HabitTaskCard({ task, onPress, onDelete }: HabitTaskCardProps) {
+export default function HabitTaskCard({ task, onPress, onDelete, onCheck }: HabitTaskCardProps) {
   const fired = task.interval_count ?? 0;
 
   function renderRightActions(
@@ -81,11 +82,11 @@ export default function HabitTaskCard({ task, onPress, onDelete }: HabitTaskCard
           </View>
         </View>
 
-        {/* Check-off (Phase 5: record interval) */}
+        {/* Check-off — records one interval done today */}
         <TouchableOpacity
           style={styles.checkButton}
           hitSlop={8}
-          onPress={() => { /* Phase 5: check off this interval */ }}
+          onPress={onCheck}
         >
           <Check size={22} color={colors.textSecondary} weight="bold" />
         </TouchableOpacity>

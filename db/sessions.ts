@@ -40,6 +40,7 @@ export async function getActiveSession(): Promise<ActiveSession | null> {
     FROM time_sessions ts
     JOIN tasks t ON t.id = ts.task_id
     WHERE ts.is_active = 1
+      AND t.is_deleted = 0
     LIMIT 1;
   `);
 }

@@ -69,7 +69,7 @@ export interface CreateHabitTaskInput {
 
 export interface UpdateTaskInput {
   name?: string;
-  notes?: string;
+  notes?: string | null;   // null clears the field
   quota_minutes?: number;    // focus only
   interval_minutes?: number; // habit only
 }

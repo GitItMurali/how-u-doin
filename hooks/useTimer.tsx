@@ -211,6 +211,11 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
    */
   const recoverTimer = useCallback(async () => {
     const active = await getActiveSession();
+    // QA-R2-01: never resume a session from a PREVIOUS day (app killed mid-timer
+    // overnight). Left alone it resumes with hours on the clock, and the daily
+    // reset's beforeReset pause would dump the whole overnight gap into TODAY's
+    // progress. recoverOrphanedSessions() (daily reset) closes it instead.
+    if (active && active.date !== getCurrentDateString()) return;
     if (active && active.started_at != null) {
       sessionIdRef.current = active.id;
       startedAtRef.current = active.started_at;
