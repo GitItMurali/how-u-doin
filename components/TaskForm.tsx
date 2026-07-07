@@ -1,9 +1,12 @@
 /**
  * components/TaskForm.tsx
  * Shared task form used by Create and Edit modals.
- * Focus: name (required) + quota chips + notes.
- * Habit: name (required) + interval chips + notes.
- * Phase 3 — preset chips (decision: tappable presets, no extra deps).
+ * Focus: name (required) + quota duration wheel + notes.
+ * Habit: name (required) + interval duration wheel + notes.
+ * Phase 3 shipped preset chips; UX-WHEEL-01 replaced them with a timer-style
+ * scroll wheel (DurationPicker — hours + minutes, '00' included, no extra deps).
+ * QA D7: the leftover preset ARRAYS (only ever indexed for two numbers) became
+ * DEFAULT_QUOTA_MINUTES / DEFAULT_INTERVAL_MINUTES.
  *
  * Type cannot be changed after creation: `lockType` hides the type selector.
  * Keyboard handling: ScrollView with bottom padding so quota/notes/submit
@@ -21,9 +24,10 @@ import {
 import { Target, Repeat } from 'phosphor-react-native';
 import { colors, typography, spacing, card } from '@/constants/theme';
 import type { TaskType } from '@/db';
+import DurationPicker, { snapDuration } from '@/components/DurationPicker';
 
-export const QUOTA_PRESETS = [15, 30, 45, 60, 90] as const;
-export const INTERVAL_PRESETS = [15, 30, 60] as const;
+export const DEFAULT_QUOTA_MINUTES = 30;
+export const DEFAULT_INTERVAL_MINUTES = 15;
 
 export interface TaskFormValue {
   type: TaskType;
@@ -49,13 +53,19 @@ export default function TaskForm({
   const [type, setType] = useState<TaskType>(initial.type);
   const [name, setName] = useState(initial.name);
   const [notes, setNotes] = useState(initial.notes);
-  const [quota, setQuota] = useState(initial.quotaMinutes);
-  const [interval, setInterval] = useState(initial.intervalMinutes);
+  // Snap legacy off-step values (e.g. an old 17-min quota) onto the wheel grid
+  // so what the user sees is exactly what gets saved.
+  const [quota, setQuota] = useState(() => snapDuration(initial.quotaMinutes));
+  const [interval, setInterval] = useState(() => snapDuration(initial.intervalMinutes));
 
   const nameValid = name.trim().length > 0;
+  // 0h 00m is selectable on the wheel but never submittable — a task with no
+  // time budget / interval is meaningless (mirrors the name-required rule).
+  const durationValid = type === 'focus' ? quota > 0 : interval > 0;
+  const formValid = nameValid && durationValid;
 
   function handleSubmit() {
-    if (!nameValid) return;
+    if (!formValid) return;
     onSubmit({
       type,
       name: name.trim(),
@@ -71,6 +81,7 @@ export default function TaskForm({
       keyboardDismissMode="interactive"
       showsVerticalScrollIndicator={false}
       contentContainerStyle={styles.scrollContent}
+      nestedScrollEnabled
     >
       {/* Type selector (create only) */}
       {!lockType && (
@@ -104,26 +115,22 @@ export default function TaskForm({
         returnKeyType="done"
       />
 
-      {/* Quota or interval chips */}
+      {/* Quota or interval — timer-style scroll wheel (UX-WHEEL-01) */}
       {type === 'focus' ? (
         <>
           <Text style={styles.label}>Daily quota</Text>
-          <ChipRow
-            options={QUOTA_PRESETS as unknown as number[]}
-            value={quota}
-            suffix="m"
-            onSelect={setQuota}
-          />
+          <DurationPicker value={quota} onChange={setQuota} />
+          {!durationValid && (
+            <Text style={styles.durationHint}>Pick a quota above 0 minutes.</Text>
+          )}
         </>
       ) : (
         <>
           <Text style={styles.label}>Remind every</Text>
-          <ChipRow
-            options={INTERVAL_PRESETS as unknown as number[]}
-            value={interval}
-            suffix=" min"
-            onSelect={setInterval}
-          />
+          <DurationPicker value={interval} onChange={setInterval} />
+          {!durationValid && (
+            <Text style={styles.durationHint}>Pick an interval above 0 minutes.</Text>
+          )}
         </>
       )}
 
@@ -141,9 +148,9 @@ export default function TaskForm({
 
       {/* Submit */}
       <TouchableOpacity
-        style={[styles.submit, !nameValid && styles.submitDisabled]}
+        style={[styles.submit, !formValid && styles.submitDisabled]}
         onPress={handleSubmit}
-        disabled={!nameValid}
+        disabled={!formValid}
         activeOpacity={0.85}
       >
         <Text style={styles.submitText}>{submitLabel}</Text>
@@ -175,38 +182,6 @@ function TypeCard({
       <Text style={[styles.typeLabel, selected && styles.typeLabelSelected]}>{label}</Text>
       <Text style={[styles.typeSub, selected && styles.typeSubSelected]}>{sub}</Text>
     </TouchableOpacity>
-  );
-}
-
-function ChipRow({
-  options,
-  value,
-  suffix,
-  onSelect,
-}: {
-  options: number[];
-  value: number;
-  suffix: string;
-  onSelect: (v: number) => void;
-}) {
-  return (
-    <View style={styles.chipRow}>
-      {options.map((opt) => {
-        const active = opt === value;
-        return (
-          <TouchableOpacity
-            key={opt}
-            style={[styles.chip, active && styles.chipActive]}
-            onPress={() => onSelect(opt)}
-            activeOpacity={0.85}
-          >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>
-              {opt}{suffix}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
   );
 }
 
@@ -270,30 +245,11 @@ const styles = StyleSheet.create({
     minHeight: 72,
     textAlignVertical: 'top',
   },
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  chip: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: 20,
-    backgroundColor: colors.background,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  chipActive: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  chipText: {
-    fontFamily: typography.fonts.bodySemiBold,
-    fontSize: typography.sizes.body,
-    color: colors.textSecondary,
-  },
-  chipTextActive: {
-    color: colors.white,
+  durationHint: {
+    fontFamily: typography.fonts.body,
+    fontSize: typography.sizes.caption,
+    color: colors.danger,
+    marginTop: spacing.sm,
   },
   submit: {
     backgroundColor: colors.primary,

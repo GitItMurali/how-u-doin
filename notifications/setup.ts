@@ -65,9 +65,20 @@ export async function requestNotificationPermission(): Promise<boolean> {
  * Run all one-time notification setup. Call once from the app root after the
  * DB is ready. Returns whether permission is granted (so the caller can decide
  * whether to schedule anything).
+ *
+ * Phase 7a: onboarding step 5 OWNS the first permission prompt. Pass
+ * `requestPermission = false` while onboarding hasn't completed so launch
+ * doesn't fire the OS dialog over the Welcome screen; the handler + channel
+ * are still configured either way.
  */
-export async function initNotifications(): Promise<boolean> {
+export async function initNotifications(
+  requestPermission: boolean = true
+): Promise<boolean> {
   configureNotificationHandler();
   await ensureAndroidChannel();
-  return requestNotificationPermission();
+  if (requestPermission) {
+    return requestNotificationPermission();
+  }
+  const settings = await Notifications.getPermissionsAsync();
+  return settings.status === 'granted';
 }

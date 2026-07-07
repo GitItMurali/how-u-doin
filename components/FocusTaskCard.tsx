@@ -1,57 +1,81 @@
 /**
  * components/FocusTaskCard.tsx
  * Focus task card — priority number, name, LIVE progress bar, time label,
- * play/pause + check buttons, drag handle, swipe-left to delete.
- * Phase 4: timer wired (play/pause toggles the live timer; check marks complete).
+ * play/pause + check buttons, drag handle, swipe-left delete, swipe-right
+ * archive (7c — immediate, no prompt, per design brief).
+ *
+ * PERF C1/C2 (7c): exported with React.memo, and the live elapsed display is
+ * computed CARD-LOCALLY from `liveStartedAt` with a 1s tick that only exists
+ * while this card is the running one. Only the running card re-renders each
+ * second — the rest of the list is untouched.
+ *
+ * B7 (7c): legacy Swipeable → ReanimatedSwipeable (gesture-handler 2.x's
+ * maintained implementation; the old one is deprecated).
  *
  * Design tokens only (constants/theme.ts) — no magic numbers.
  */
-import React from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  Animated,
 } from 'react-native';
-import { Swipeable } from 'react-native-gesture-handler';
-import { Play, Pause, Check, DotsSixVertical, Trash } from 'phosphor-react-native';
+import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+import { Play, Pause, Check, DotsSixVertical, Trash, Archive } from 'phosphor-react-native';
 
 import { colors, typography, spacing, card, progressBar, swipe } from '@/constants/theme';
 import type { TaskWithProgress } from '@/db';
+// Phase 7b consolidation: formatClock moved to lib/date.ts (History uses it too).
+import { formatClock } from '@/lib/date';
 
 interface FocusTaskCardProps {
   task: TaskWithProgress;
   priority: number;            // 1-based position in the list
   onPress: () => void;         // open edit modal
   onDelete: () => void;        // confirm + deleteTask (handled by parent)
+  onArchive: () => void;       // archive immediately (handled by parent)
   onDragStart: () => void;     // long-press drag handle
   isActive: boolean;           // true while being dragged
-  // ── Phase 4 timer wiring ──
-  isRunning: boolean;          // this card's timer is the active one
-  liveSeconds: number;         // live elapsed seconds while running (0 otherwise)
+  // ── Timer wiring ──
+  /** ms epoch this card's session started at; null when not running (PERF C2). */
+  liveStartedAt: number | null;
   onToggleTimer: () => void;   // start/pause this task's timer
   onComplete: () => void;      // mark task complete now
 }
 
-export default function FocusTaskCard({
+function FocusTaskCard({
   task,
   priority,
   onPress,
   onDelete,
+  onArchive,
   onDragStart,
   isActive,
-  isRunning,
-  liveSeconds,
+  liveStartedAt,
   onToggleTimer,
   onComplete,
 }: FocusTaskCardProps) {
+  const isRunning = liveStartedAt !== null;
+
+  // Card-local 1s tick — mounts only while running (PERF C2).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (liveStartedAt === null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [liveStartedAt]);
+
   const quota = task.quota_minutes ?? 0;        // quota in minutes
   const quotaSeconds = quota * 60;
   const baseSeconds = task.logged_seconds ?? 0; // persisted, seconds-granular
 
   // While running, provisional progress = persisted seconds + live elapsed seconds.
-  const liveSec = isRunning ? liveSeconds : 0;
+  const liveSec =
+    liveStartedAt !== null
+      ? Math.max(0, Math.floor((now - liveStartedAt) / 1000))
+      : 0;
   const displaySeconds = baseSeconds + liveSec;
 
   const complete =
@@ -64,9 +88,7 @@ export default function FocusTaskCard({
     ? `${formatClock(displaySeconds)}  /  ${quota}m`
     : `${formatClock(baseSeconds)} / ${quota}m`;
 
-  function renderRightActions(
-    _progress: Animated.AnimatedInterpolation<number>,
-  ) {
+  function renderRightActions() {
     return (
       <TouchableOpacity
         style={styles.deleteAction}
@@ -78,11 +100,26 @@ export default function FocusTaskCard({
     );
   }
 
+  function renderLeftActions() {
+    return (
+      <View style={styles.archiveAction}>
+        <Archive size={swipe.actionIconSize} color={colors.white} weight="bold" />
+      </View>
+    );
+  }
+
   return (
-    <Swipeable
+    <ReanimatedSwipeable
       renderRightActions={renderRightActions}
+      renderLeftActions={renderLeftActions}
       rightThreshold={swipe.revealThreshold}
+      leftThreshold={swipe.revealThreshold}
       overshootRight={false}
+      overshootLeft={false}
+      onSwipeableOpen={(direction) => {
+        // Swipe right (left actions revealed) = archive immediately, no prompt.
+        if (direction === 'left') onArchive();
+      }}
     >
       <TouchableOpacity
         style={[
@@ -167,19 +204,13 @@ export default function FocusTaskCard({
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
-    </Swipeable>
+    </ReanimatedSwipeable>
   );
 }
 
-/** Seconds -> "M:SS" (or "H:MM:SS" past an hour). */
-function formatClock(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
-}
+// PERF C1: memoized — with renderFocusItem's deps now excluding per-second
+// state, unchanged cards skip re-rendering entirely.
+export default memo(FocusTaskCard);
 
 const styles = StyleSheet.create({
   card: {
@@ -255,6 +286,14 @@ const styles = StyleSheet.create({
   },
   deleteAction: {
     backgroundColor: swipe.deleteBackgroundColor,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 72,
+    borderRadius: card.borderRadius,
+    marginBottom: card.gap,
+  },
+  archiveAction: {
+    backgroundColor: swipe.archiveBackgroundColor,
     justifyContent: 'center',
     alignItems: 'center',
     width: 72,

@@ -3,22 +3,30 @@
  * Phase 4 — live timer for Focus tasks.
  *
  * Provides a single global timer context (TimerProvider) so the whole app shares
- * one source of truth for "which Focus task is currently running" and its live
- * elapsed seconds. This enforces the SINGLE-TIMER RULE: starting a timer auto-pauses
- * any other running Focus timer (saving its elapsed time) and shows a toast.
+ * one source of truth for "which Focus task is currently running". This enforces
+ * the SINGLE-TIMER RULE: starting a timer auto-pauses any other running Focus
+ * timer (saving its elapsed time) and shows a toast.
  *
  * Persistence model (DB is source of truth):
  *  - startTimer  -> startSession() inserts an is_active row with started_at = now.
  *  - pause/stop  -> stopSession() records duration (seconds), then addLoggedSeconds() updates
  *                   daily_progress; quota check fires markComplete + Time's Up.
- *  - foreground  -> recoverTimer() reads getActiveSession() and resumes the live tick
- *                   from the stored started_at (survives backgrounding / cold-ish resume).
+ *  - foreground  -> recoverTimer() reads getActiveSession() and resumes from the
+ *                   stored started_at (survives backgrounding / cold-ish resume).
  *
  * Date rule: ALWAYS getCurrentDateString() (INTEGRATION-01) — never toISOString.
  *
- * Phase 5: on quota completion this fires a real local 'times_up' push via
- * notifications/scheduler.ts (unless snooze is active) AND surfaces a toast as
- * immediate in-app feedback.
+ * FIX-QUOTA-STOP (2026-07-07): the provider's internal 1s tick watches a quota
+ * deadline and auto-pauses the timer the moment the quota is hit.
+ *
+ * PERF C1/C2 (7c): the context NO LONGER exposes per-second state. It exposes
+ * `activeStartedAt` (changes only on start/pause), and the running FocusTaskCard
+ * computes its own elapsed display from it with a card-local tick. Before this,
+ * elapsedSeconds state updated every second → new context value → EVERY consumer
+ * (whole Home list) re-rendered once per second while a timer ran.
+ *
+ * B6 (7c): startTimer/pauseTimer are re-entrancy-guarded — a double-tap on play
+ * could previously interleave two startSession calls (two active rows).
  */
 import React, {
   createContext,
@@ -28,8 +36,6 @@ import React, {
   useCallback,
   useEffect,
 } from 'react';
-import { ToastAndroid, Platform } from 'react-native';
-
 import {
   getCurrentDateString,
   getTask,
@@ -43,26 +49,29 @@ import {
   isSnoozeActive,
 } from '@/db';
 import { fireTimesUpNotification } from '@/notifications/scheduler';
-
-// ─── Toast helper ───────────────────────────────────────────────────────────────
-// Android-first app. ToastAndroid is the paused/Time's-Up surface for now.
-function toast(message: string): void {
-  if (Platform.OS === 'android') {
-    ToastAndroid.show(message, ToastAndroid.SHORT);
-  }
-  // iOS has no native toast; Phase 7c polish can add a custom snackbar if needed.
-}
+import { toast } from '@/lib/toast';
 
 // ─── Context shape ──────────────────────────────────────────────────────────────
 
 interface TimerContextValue {
   /** id of the Focus task whose timer is currently running, or null. */
   activeTaskId: number | null;
-  /** live elapsed seconds for the active task (0 when nothing is running). */
-  elapsedSeconds: number;
+  /**
+   * ms epoch the running session started at (null when nothing runs).
+   * PERF C2: cards derive their live elapsed display from this with their own
+   * 1s tick — the context itself only changes on start/pause/recover.
+   */
+  activeStartedAt: number | null;
+  /**
+   * Bumped every time a session is finalized (manual pause, single-timer
+   * auto-pause, OR quota auto-stop). Screens should reload persisted progress
+   * when this changes — it's how the quota auto-stop (FIX-QUOTA-STOP) reaches
+   * the Home list without a user interaction.
+   */
+  sessionsVersion: number;
   /** Start (or resume) the timer for a focus task. Auto-pauses any other running timer. */
   startTimer: (taskId: number) => Promise<void>;
-  /** Pause the running timer and persist elapsed minutes. No-op if taskId isn't active. */
+  /** Pause the running timer and persist elapsed time. No-op if taskId isn't active. */
   pauseTimer: (taskId: number) => Promise<void>;
   /** Toggle convenience: start if not running, pause if it is. */
   toggleTimer: (taskId: number) => Promise<void>;
@@ -76,12 +85,24 @@ const TimerContext = createContext<TimerContextValue | null>(null);
 
 export function TimerProvider({ children }: { children: React.ReactNode }) {
   const [activeTaskId, setActiveTaskId] = useState<number | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [activeStartedAt, setActiveStartedAt] = useState<number | null>(null);
+  const [sessionsVersion, setSessionsVersion] = useState(0);
 
   // Refs survive re-renders without re-triggering effects.
   const sessionIdRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null); // ms epoch of session start
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // FIX-QUOTA-STOP: the tick needs stable access to "who is running", "when the
+  // quota will be hit", and "how to pause" without stale closures.
+  const activeTaskIdRef = useRef<number | null>(null);
+  const quotaDeadlineRef = useRef<number | null>(null); // ms epoch when quota hits
+  const autoStoppingRef = useRef(false);                // one-shot guard
+  const pauseRef = useRef<(taskId: number) => Promise<void>>(async () => {});
+
+  // B6: one timer mutation at a time. A fast double-tap on play used to run
+  // two overlapping startTimer calls -> two is_active session rows.
+  const opInProgressRef = useRef(false);
 
   const clearTick = useCallback(() => {
     if (tickRef.current !== null) {
@@ -90,20 +111,44 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Begin the 1s display tick. Computes elapsed from startedAt so it stays
-  // accurate even if a tick is missed (e.g. JS thread was busy).
+  // Internal 1s tick — exists ONLY for the quota auto-stop watcher now (PERF
+  // C2 moved the elapsed display into the running card). No state updates here.
   const beginTick = useCallback(() => {
     clearTick();
     tickRef.current = setInterval(() => {
-      if (startedAtRef.current !== null) {
-        const secs = Math.floor((Date.now() - startedAtRef.current) / 1000);
-        setElapsedSeconds(secs);
+      if (
+        quotaDeadlineRef.current !== null &&
+        Date.now() >= quotaDeadlineRef.current &&
+        !autoStoppingRef.current &&
+        activeTaskIdRef.current !== null
+      ) {
+        autoStoppingRef.current = true;
+        void pauseRef.current(activeTaskIdRef.current);
       }
     }, 1000);
   }, [clearTick]);
 
   /**
-   * Internal: stop the currently active session, persist its minutes, run the
+   * FIX-QUOTA-STOP: compute the ms-epoch moment this session will hit the
+   * task's quota (already-logged seconds count toward it). null when the task
+   * has no quota, is already complete, or is already past quota — those
+   * sessions run un-clamped, exactly as before.
+   */
+  const computeQuotaDeadline = useCallback(
+    async (taskId: number, sessionStartedAt: number): Promise<number | null> => {
+      const task = await getTask(taskId);
+      if (!task || task.quota_minutes == null || task.quota_minutes <= 0) return null;
+      const progress = await getOrCreateProgress(taskId, getCurrentDateString());
+      if (progress.is_complete === 1) return null;
+      const remainingSeconds = task.quota_minutes * 60 - progress.logged_seconds;
+      if (remainingSeconds <= 0) return null;
+      return sessionStartedAt + remainingSeconds * 1000;
+    },
+    [],
+  );
+
+  /**
+   * Internal: stop the currently active session, persist its time, run the
    * quota -> complete -> Time's Up check. Returns nothing; leaves no active timer.
    * Caller is responsible for clearing UI state if needed.
    */
@@ -132,7 +177,7 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
     // 2) Roll the seconds into daily_progress (QA-04: stopSession CALLER MUST do this).
     await addLoggedSeconds(taskId, today, durationSeconds);
 
-    // 3) Quota check (pattern documented on addLoggedMinutes / stopSession).
+    // 3) Quota check (pattern documented on addLoggedSeconds / stopSession).
     const task = await getTask(taskId);
     const progress = await getOrCreateProgress(taskId, today);
     if (
@@ -161,38 +206,63 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
 
     sessionIdRef.current = null;
     startedAtRef.current = null;
+    // Persisted progress just changed — tell subscribed screens to reload.
+    setSessionsVersion((v) => v + 1);
   }, [activeTaskId, clearTick]);
 
   const startTimer = useCallback(
     async (taskId: number) => {
-      // Single-timer rule: if a DIFFERENT focus timer is running, pause it first.
-      if (activeTaskId !== null && activeTaskId !== taskId) {
-        const previous = await getTask(activeTaskId);
-        await finalizeActiveSession();
-        if (previous) toast(`${previous.name} paused`);
+      if (opInProgressRef.current) return; // B6 re-entrancy guard
+      opInProgressRef.current = true;
+      try {
+        // Single-timer rule: if a DIFFERENT focus timer is running, pause it first.
+        if (activeTaskId !== null && activeTaskId !== taskId) {
+          const previous = await getTask(activeTaskId);
+          await finalizeActiveSession();
+          if (previous) toast(`${previous.name} paused`);
+        }
+
+        const today = getCurrentDateString();
+        const sessionId = await startSession(taskId, today);
+        const startedAt = Date.now();
+
+        sessionIdRef.current = sessionId;
+        startedAtRef.current = startedAt;
+        activeTaskIdRef.current = taskId;
+        autoStoppingRef.current = false;
+        quotaDeadlineRef.current = await computeQuotaDeadline(taskId, startedAt);
+        setActiveTaskId(taskId);
+        setActiveStartedAt(startedAt);
+        beginTick();
+      } finally {
+        opInProgressRef.current = false;
       }
-
-      const today = getCurrentDateString();
-      const sessionId = await startSession(taskId, today);
-
-      sessionIdRef.current = sessionId;
-      startedAtRef.current = Date.now();
-      setActiveTaskId(taskId);
-      setElapsedSeconds(0);
-      beginTick();
     },
-    [activeTaskId, finalizeActiveSession, beginTick],
+    [activeTaskId, finalizeActiveSession, beginTick, computeQuotaDeadline],
   );
 
   const pauseTimer = useCallback(
     async (taskId: number) => {
       if (activeTaskId !== taskId) return; // not the running one — ignore
-      await finalizeActiveSession();
-      setActiveTaskId(null);
-      setElapsedSeconds(0);
+      if (opInProgressRef.current) return; // B6 re-entrancy guard
+      opInProgressRef.current = true;
+      try {
+        quotaDeadlineRef.current = null;
+        activeTaskIdRef.current = null;
+        await finalizeActiveSession();
+        setActiveTaskId(null);
+        setActiveStartedAt(null);
+      } finally {
+        opInProgressRef.current = false;
+      }
     },
     [activeTaskId, finalizeActiveSession],
   );
+
+  // Keep the tick's pause handle fresh (it can't hold a stale closure).
+  useEffect(() => {
+    pauseRef.current = pauseTimer;
+  }, [pauseTimer]);
 
   const toggleTimer = useCallback(
     async (taskId: number) => {
@@ -207,7 +277,7 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
 
   /**
    * On launch / foreground: if the DB has an active session (app was killed mid-run,
-   * or screen remounted), resume the live tick from its stored started_at.
+   * or screen remounted), resume from its stored started_at.
    */
   const recoverTimer = useCallback(async () => {
     const active = await getActiveSession();
@@ -219,18 +289,28 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
     if (active && active.started_at != null) {
       sessionIdRef.current = active.id;
       startedAtRef.current = active.started_at;
+      activeTaskIdRef.current = active.task_id;
+      autoStoppingRef.current = false;
+      // FIX-QUOTA-STOP: recompute the deadline from the ORIGINAL started_at —
+      // if the quota was crossed while backgrounded, the next tick (≤1s away)
+      // auto-pauses immediately.
+      quotaDeadlineRef.current = await computeQuotaDeadline(
+        active.task_id,
+        active.started_at,
+      );
       setActiveTaskId(active.task_id);
-      setElapsedSeconds(Math.floor((Date.now() - active.started_at) / 1000));
+      setActiveStartedAt(active.started_at);
       beginTick();
     }
-  }, [beginTick]);
+  }, [beginTick, computeQuotaDeadline]);
 
   // Clean up the interval if the provider unmounts.
   useEffect(() => clearTick, [clearTick]);
 
   const value: TimerContextValue = {
     activeTaskId,
-    elapsedSeconds,
+    activeStartedAt,
+    sessionsVersion,
     startTimer,
     pauseTimer,
     toggleTimer,

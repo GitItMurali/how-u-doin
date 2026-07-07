@@ -6,6 +6,8 @@ REM  every time it regenerates the android/ folder on prebuild.
 REM
 REM   BUILD-04: pin Gradle wrapper to 8.13 (9.x breaks RN plugin)
 REM   BUILD-05: recreate local.properties (SDK location)
+REM   RUNTIME-01: force newArchEnabled=false in gradle.properties
+REM              (new arch breaks expo-sqlite; regen can flip it true)
 REM
 REM  Run this AFTER prebuild has created android/ but BEFORE the
 REM  Gradle build runs -- or just run it then re-run the build.
@@ -40,6 +42,10 @@ echo zipStorePath=wrapper/dists
 echo [*] Writing android\local.properties ...
 echo sdk.dir=%SDKDIR%> "%LOCALPROPS%"
 
+echo [*] Forcing newArchEnabled=false in gradle.properties (RUNTIME-01) ...
+set "GRADLEPROPS=%PROJ%android\gradle.properties"
+powershell -NoProfile -Command "(Get-Content '%GRADLEPROPS%') -replace 'newArchEnabled=true','newArchEnabled=false' | Set-Content '%GRADLEPROPS%'"
+
 echo.
 echo [OK] Build files re-applied:
 echo     - %WRAPPER%
@@ -48,6 +54,7 @@ echo.
 echo Verify:
 type "%WRAPPER%" | findstr distributionUrl
 type "%LOCALPROPS%"
+type "%GRADLEPROPS%" | findstr newArchEnabled
 echo.
 echo Now run:  npx expo run:android
 

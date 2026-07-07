@@ -128,13 +128,29 @@ export async function getNotificationByExpoId(
   );
 }
 
-/**
- * Get all currently active notification records.
- * Used for debugging / sanity check.
- */
-export async function getAllActiveNotifications(): Promise<NotificationRecord[]> {
-  const db = getDb();
-  return db.getAllAsync<NotificationRecord>(
-    'SELECT * FROM notification_schedule WHERE is_active = 1 ORDER BY scheduled_for ASC;'
-  );
+/** One habit's next scheduled ping (UX-COUNTDOWN-01). */
+export interface NextFireRow {
+  task_id: number;
+  next_fire_at: number;   // Unix ms
 }
+
+/**
+ * Next scheduled interval fire time per task (UX-COUNTDOWN-01 — the Habits tab
+ * "next ping in Xm" countdown). One row per task with an active future-or-past
+ * 'interval' notification; tasks with nothing scheduled (snoozed, archived,
+ * just reset) simply have no row — the card shows no countdown.
+ *
+ * MIN() handles the (shouldn't-happen) case of multiple active intervals for
+ * one task by showing the soonest.
+ */
+export async function getNextIntervalFireTimes(): Promise<NextFireRow[]> {
+  const db = getDb();
+  return db.getAllAsync<NextFireRow>(`
+    SELECT task_id, MIN(scheduled_for) AS next_fire_at
+    FROM notification_schedule
+    WHERE is_active = 1
+      AND notification_type = 'interval'
+    GROUP BY task_id;
+  `);
+}
+

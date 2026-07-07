@@ -60,13 +60,6 @@ export async function setSnoozeActive(active: boolean): Promise<void> {
   }
 }
 
-export async function getSnoozeActivatedAt(): Promise<number | null> {
-  const val = await getSetting('snooze_activated_at');
-  if (!val) return null;
-  const ms = parseInt(val, 10);
-  return isNaN(ms) ? null : ms;
-}
-
 // ─── Biometrics ───────────────────────────────────────────────────────────────
 
 export async function isBiometricsEnabled(): Promise<boolean> {
@@ -85,39 +78,4 @@ export async function isOnboardingComplete(): Promise<boolean> {
 
 export async function setOnboardingComplete(complete: boolean): Promise<void> {
   await setSetting('onboarding_complete', complete ? '1' : '0');
-}
-
-// ─── Bulk read for app startup ────────────────────────────────────────────────
-
-export interface AppSettings {
-  reset_time: string;
-  last_reset_date: string;
-  snooze_active: boolean;
-  snooze_activated_at: number | null;
-  biometrics_enabled: boolean;
-  onboarding_complete: boolean;
-}
-
-/**
- * Load all settings in a single query for app startup.
- * More efficient than calling individual getters one by one.
- */
-export async function getAllSettings(): Promise<AppSettings> {
-  const db = getDb();
-  const rows = await db.getAllAsync<{ key: string; value: string }>(
-    'SELECT key, value FROM app_settings;'
-  );
-
-  const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
-  const snoozeAt = map['snooze_activated_at'];
-  const snoozeAtMs = snoozeAt ? parseInt(snoozeAt, 10) : null;
-
-  return {
-    reset_time:          map['reset_time']          ?? '00:00',
-    last_reset_date:     map['last_reset_date']      ?? '',
-    snooze_active:       map['snooze_active']        === '1',
-    snooze_activated_at: snoozeAtMs && !isNaN(snoozeAtMs) ? snoozeAtMs : null,
-    biometrics_enabled:  map['biometrics_enabled']   === '1',
-    onboarding_complete: map['onboarding_complete']  === '1',
-  };
 }

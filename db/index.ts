@@ -20,29 +20,27 @@ export { getCurrentDateString,
          deleteTask, archiveTask, restoreTask,
          reorderFocusTasks } from './tasks';
 
-export type { TimeSession, ActiveSession } from './sessions';
-export { getActiveSession, getSessionsForDate,
+export type { TimeSession, ActiveSession, SessionWithTaskName } from './sessions';
+export { getActiveSession, getSessionsInRange,
          startSession, stopSession,
          recoverOrphanedSessions, addManualSession } from './sessions';
 
-export type { DailyProgress, HistoryRow } from './progress';
-export { getOrCreateProgress, addLoggedMinutes, addLoggedSeconds,
-         markComplete, recordIntervalFired, resetDailyProgress,
-         getHistory, getTodayHistory } from './progress';
+export type { DailyProgress, HistoryTotalsRow, HabitPingRow } from './progress';
+export { getOrCreateProgress, addLoggedSeconds,
+         markComplete, reevaluateCompletion, recordIntervalFired,
+         getHistoryTotals, getHabitPingCounts } from './progress';
 
-export type { AppSettings } from './settings';
 export { getSetting, setSetting,
          getResetTime, setResetTime,
          getLastResetDate, setLastResetDate,
-         isSnoozeActive, setSnoozeActive, getSnoozeActivatedAt,
+         isSnoozeActive, setSnoozeActive,
          isBiometricsEnabled, setBiometricsEnabled,
-         isOnboardingComplete, setOnboardingComplete,
-         getAllSettings } from './settings';
+         isOnboardingComplete, setOnboardingComplete } from './settings';
 
-export type { NotificationType, NotificationRecord } from './notifications';
+export type { NotificationType, NotificationRecord, NextFireRow } from './notifications';
 export { saveNotification, cancelNotificationById,
          cancelNotificationsForTask, cancelAllNotifications,
          clearAllNotificationRecords,
          getActiveNotificationsForTask,
          getNotificationByExpoId,
-         getAllActiveNotifications } from './notifications';
+         getNextIntervalFireTimes } from './notifications';

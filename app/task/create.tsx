@@ -13,7 +13,11 @@ import { colors, typography, spacing, sheet } from '@/constants/theme';
 import type { RootStackParamList } from '@/app/_layout';
 import { createFocusTask, createHabitTask, isSnoozeActive } from '@/db';
 import { scheduleIntervalNotification } from '@/notifications/scheduler';
-import TaskForm, { TaskFormValue, QUOTA_PRESETS, INTERVAL_PRESETS } from '@/components/TaskForm';
+import TaskForm, {
+  TaskFormValue,
+  DEFAULT_QUOTA_MINUTES,
+  DEFAULT_INTERVAL_MINUTES,
+} from '@/components/TaskForm';
 
 type CreateTaskRoute = RouteProp<RootStackParamList, 'CreateTask'>;
 
@@ -67,8 +71,8 @@ export default function CreateTaskModal() {
             type: defaultType,
             name: '',
             notes: '',
-            quotaMinutes: QUOTA_PRESETS[1],     // 30
-            intervalMinutes: INTERVAL_PRESETS[0], // 15
+            quotaMinutes: DEFAULT_QUOTA_MINUTES,
+            intervalMinutes: DEFAULT_INTERVAL_MINUTES,
           }}
           submitLabel="Create task"
           onSubmit={handleSubmit}

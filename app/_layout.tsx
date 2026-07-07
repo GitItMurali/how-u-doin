@@ -5,9 +5,16 @@
  * Phase 3: initDb() gate added — DB must be ready before any screen queries it.
  * Phase 5: notification runtime init + tap/observer wiring (navigationRef).
  * Phase 6: daily reset — background-fetch registration + foreground safety net.
+ * Phase 7a: gate state machine (boot → onboarding → locked → ready). The gate
+ *           lives HERE, above the NavigationContainer — lock/onboarding never
+ *           enter the nav stack, so there are no back-button or deep-link
+ *           bypasses. Providers (Timer/Snooze/DailyResetRunner) stay mounted
+ *           around the gate so the daily reset still runs while locked.
+ *           Relock policy: cold start + every AppState exit from 'active'
+ *           (only when a PIN exists).
  */
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, View, Text } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, View, Text, AppState } from 'react-native';
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -29,7 +36,10 @@ import TabNavigator from '@/components/navigation/TabNavigator';
 import CreateTaskModal from '@/app/task/create';
 import EditTaskModal from '@/app/task/[id]';
 import { colors, typography, spacing } from '@/constants/theme';
-import { initDb } from '@/db';
+import { initDb, isOnboardingComplete } from '@/db';
+import { isPinSet } from '@/lib/pin';
+import LockScreen from '@/app/lock';
+import Onboarding from '@/app/onboarding';
 import { initNotifications } from '@/notifications/setup';
 import { useNotificationObserver } from '@/notifications/useNotificationObserver';
 // Side-effect import: defines the headless background task at module top level
@@ -88,6 +98,12 @@ export default function RootLayout() {
   const [dbReady, setDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
 
+  // Phase 7a gate. 'boot' until the onboarding/PIN decision is made.
+  const [gate, setGate] = useState<'boot' | 'onboarding' | 'locked' | 'ready'>('boot');
+  // Whether a PIN exists — governs relock-on-background. Kept in a ref so the
+  // AppState listener never holds a stale value.
+  const pinExistsRef = useRef(false);
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -103,13 +119,52 @@ export default function RootLayout() {
     };
   }, []);
 
-  // Phase 5: notification runtime setup once the DB is ready (handler + channel
-  // + permission). Phase 6: register the background daily-reset task (idempotent,
-  // interval-based — never needs re-registration when reset_time changes).
+  // Phase 7a: entry decision once the DB is up. SecureStore failure here must
+  // not brick the app — treat "can't read PIN" as "no PIN" (local-only threat
+  // model; the alternative is an unusable app).
   useEffect(() => {
     if (!dbReady) return;
-    void initNotifications();
-    void registerDailyResetTask();
+    let mounted = true;
+    (async () => {
+      const onboarded = await isOnboardingComplete();
+      let pinExists = false;
+      try {
+        pinExists = await isPinSet();
+      } catch {
+        pinExists = false;
+      }
+      if (!mounted) return;
+      pinExistsRef.current = pinExists;
+      if (!onboarded) setGate('onboarding');
+      else if (pinExists) setGate('locked');
+      else setGate('ready');
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [dbReady]);
+
+  // Phase 7a: relock whenever the app leaves 'active' while unlocked.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' && pinExistsRef.current) {
+        setGate((g) => (g === 'ready' ? 'locked' : g));
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Phase 5: notification runtime setup once the DB is ready (handler + channel).
+  // Phase 7a: the OS permission prompt is only fired here AFTER onboarding has
+  // run (onboarding step 5 owns the first ask). Phase 6: register the background
+  // daily-reset task (idempotent, interval-based — never needs re-registration
+  // when reset_time changes).
+  useEffect(() => {
+    if (!dbReady) return;
+    void (async () => {
+      void initNotifications(await isOnboardingComplete());
+      void registerDailyResetTask();
+    })();
   }, [dbReady]);
 
   // Phase 5: observe notification taps (routing) + interval fires (reschedule).
@@ -124,7 +179,7 @@ export default function RootLayout() {
     );
   }
 
-  if (!fontsLoaded || !dbReady) {
+  if (!fontsLoaded || !dbReady || gate === 'boot') {
     return (
       <View style={styles.center}>
         <ActivityIndicator color={colors.primary} />
@@ -138,27 +193,40 @@ export default function RootLayout() {
         <TimerProvider>
             <SnoozeProvider>
               <DailyResetRunner />
-              <NavigationContainer ref={navigationRef}>
-                <Stack.Navigator screenOptions={{ headerShown: false }}>
-                  <Stack.Screen name="Tabs" component={TabNavigator} />
-                  <Stack.Screen
-                    name="CreateTask"
-                    component={CreateTaskModal}
-                    options={{
-                      presentation: 'modal',
-                      cardStyle: { backgroundColor: 'transparent' },
-                    }}
-                  />
-                  <Stack.Screen
-                    name="EditTask"
-                    component={EditTaskModal}
-                    options={{
-                      presentation: 'modal',
-                      cardStyle: { backgroundColor: 'transparent' },
-                    }}
-                  />
-                </Stack.Navigator>
-              </NavigationContainer>
+              {gate === 'onboarding' ? (
+                <Onboarding
+                  onDone={() => {
+                    // Onboarding just set a PIN — arm relock-on-background and
+                    // enter the app unlocked (they proved the PIN seconds ago).
+                    pinExistsRef.current = true;
+                    setGate('ready');
+                  }}
+                />
+              ) : gate === 'locked' ? (
+                <LockScreen onUnlocked={() => setGate('ready')} />
+              ) : (
+                <NavigationContainer ref={navigationRef}>
+                  <Stack.Navigator screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="Tabs" component={TabNavigator} />
+                    <Stack.Screen
+                      name="CreateTask"
+                      component={CreateTaskModal}
+                      options={{
+                        presentation: 'modal',
+                        cardStyle: { backgroundColor: 'transparent' },
+                      }}
+                    />
+                    <Stack.Screen
+                      name="EditTask"
+                      component={EditTaskModal}
+                      options={{
+                        presentation: 'modal',
+                        cardStyle: { backgroundColor: 'transparent' },
+                      }}
+                    />
+                  </Stack.Navigator>
+                </NavigationContainer>
+              )}
             </SnoozeProvider>
         </TimerProvider>
       </SafeAreaProvider>

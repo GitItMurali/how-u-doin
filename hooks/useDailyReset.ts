@@ -14,8 +14,8 @@
  *   5+6. scheduleAllHabitNotifications()— fresh interval ping per active habit
  *   7. setLastResetDate(today)
  *
- * NOTE: resetDailyProgress() is an intentional no-op — daily_progress rows are
- * per-date, so the new day simply starts with no rows. Nothing to clear.
+ * NOTE: daily_progress needs NO reset step — rows are per-date, so the new
+ * day simply starts with no rows (created lazily by getOrCreateProgress).
  */
 
 import { useEffect, useRef } from 'react';
@@ -34,18 +34,10 @@ import {
   cancelAllScheduledNotifications,
   scheduleAllHabitNotifications,
 } from '@/notifications/scheduler';
+// Phase 7b consolidation: dateStringDaysAgo moved to lib/date.ts.
+import { dateStringDaysAgo } from '@/lib/date';
 
 // ─── Check ───────────────────────────────────────────────────────────────────
-
-/** Local-timezone date string for `days` days ago (same format as getCurrentDateString). */
-function dateStringDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
 
 /**
  * True when the daily reset should run:

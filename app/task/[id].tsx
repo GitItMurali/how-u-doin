@@ -11,13 +11,23 @@ import { X } from 'phosphor-react-native';
 
 import { colors, typography, spacing, sheet } from '@/constants/theme';
 import type { RootStackParamList } from '@/app/_layout';
-import { getTask, updateTask, isSnoozeActive } from '@/db';
+import {
+  getTask,
+  updateTask,
+  isSnoozeActive,
+  reevaluateCompletion,
+  getCurrentDateString,
+} from '@/db';
 import {
   cancelNotificationsForTaskFull,
   scheduleIntervalNotification,
 } from '@/notifications/scheduler';
 import type { Task } from '@/db';
-import TaskForm, { TaskFormValue, QUOTA_PRESETS, INTERVAL_PRESETS } from '@/components/TaskForm';
+import TaskForm, {
+  TaskFormValue,
+  DEFAULT_QUOTA_MINUTES,
+  DEFAULT_INTERVAL_MINUTES,
+} from '@/components/TaskForm';
 
 type EditTaskRoute = RouteProp<RootStackParamList, 'EditTask'>;
 
@@ -53,6 +63,11 @@ export default function EditTaskModal() {
         notes: value.notes === '' ? null : value.notes,
         quota_minutes: value.quotaMinutes,
       });
+      // FIX-QUOTA-EDIT: is_complete is a one-way latch set at quota-hit time,
+      // so a finished task kept its green tick after the quota was raised.
+      // Re-check today's logged time against the NEW quota: raise above logged
+      // → reopens (resumes x → new y); lower below logged → completes silently.
+      await reevaluateCompletion(taskId, getCurrentDateString(), value.quotaMinutes);
     } else {
       const intervalChanged = task?.interval_minutes !== value.intervalMinutes;
       await updateTask(taskId, {
@@ -103,8 +118,8 @@ export default function EditTaskModal() {
               type: task.task_type,
               name: task.name,
               notes: task.notes ?? '',
-              quotaMinutes: task.quota_minutes ?? QUOTA_PRESETS[1],
-              intervalMinutes: task.interval_minutes ?? INTERVAL_PRESETS[0],
+              quotaMinutes: task.quota_minutes ?? DEFAULT_QUOTA_MINUTES,
+              intervalMinutes: task.interval_minutes ?? DEFAULT_INTERVAL_MINUTES,
             }}
             submitLabel="Save changes"
             onSubmit={handleSubmit}

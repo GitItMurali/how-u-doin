@@ -1,14 +1,16 @@
 /**
  * app/(tabs)/index.tsx
- * Home screen — Focus | Habits segmented pill tabs.
+ * Home screen — Focus | Habits segmented pill tabs (FilterPills since 7c).
  * Phase 3: real task data, FocusTaskCard (draggable), HabitTaskCard, swipe-delete.
+ * Phase 7c: swipe-right archive on both card types; PERF C2 — cards self-tick
+ * from activeStartedAt, so this screen no longer re-renders every second.
  *
  * Data rules:
  *  - dates ALWAYS via getCurrentDateString() (INTEGRATION-01) — never toISOString
  *  - types imported from @/db barrel (no redefinition)
  *  - reorder uses reorderFocusTasks() single-transaction (BUILD note: no new deps)
  */
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,8 +19,7 @@ import {
   StyleSheet,
   StatusBar,
   Alert,
-  ToastAndroid,
-  Platform,
+  ListRenderItemInfo,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -29,7 +30,7 @@ import DraggableFlatList, {
   RenderItemParams,
 } from 'react-native-draggable-flatlist';
 
-import { colors, typography, spacing, pillTab, fab } from '@/constants/theme';
+import { colors, typography, spacing, fab } from '@/constants/theme';
 import type { RootStackParamList } from '@/app/_layout';
 import {
   getCurrentDateString,
@@ -37,37 +38,50 @@ import {
   getHabitTasks,
   reorderFocusTasks,
   deleteTask,
+  archiveTask,
   getTask,
   getOrCreateProgress,
   markComplete,
   getNextPendingFocusTask,
   isSnoozeActive,
   recordIntervalFired,
+  getNextIntervalFireTimes,
 } from '@/db';
 import type { TaskWithProgress, HabitWithProgress, ReorderEntry } from '@/db';
 import FocusTaskCard from '@/components/FocusTaskCard';
 import HabitTaskCard from '@/components/HabitTaskCard';
 import EmptyState from '@/components/EmptyState';
+import FilterPills from '@/components/FilterPills';
 import { useTimer } from '@/hooks/useTimer';
+import { toast } from '@/lib/toast';
 import { useSnooze } from '@/hooks/snooze';
 import SnoozeBanner from '@/components/SnoozeBanner';
 import {
   cancelNotificationsForTaskFull,
   fireTimesUpNotification,
+  restartHabitCadence,
 } from '@/notifications/scheduler';
 
 type HomeNavProp = StackNavigationProp<RootStackParamList>;
 type ActiveTab = 'focus' | 'habit';
 
+const TAB_OPTIONS: { key: ActiveTab; label: string }[] = [
+  { key: 'focus', label: 'Focus' },
+  { key: 'habit', label: 'Habits' },
+];
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<HomeNavProp>();
   const [activeTab, setActiveTab] = useState<ActiveTab>('focus');
-  const { activeTaskId, elapsedSeconds, toggleTimer, pauseTimer, recoverTimer } = useTimer();
+  const { activeTaskId, activeStartedAt, sessionsVersion, toggleTimer, pauseTimer, recoverTimer } =
+    useTimer();
   const { snoozed, toggleSnooze } = useSnooze();
 
   const [focusTasks, setFocusTasks] = useState<TaskWithProgress[]>([]);
   const [habitTasks, setHabitTasks] = useState<HabitWithProgress[]>([]);
+  // task_id -> next scheduled interval ping (Unix ms). UX-COUNTDOWN-01.
+  const [nextFireByTask, setNextFireByTask] = useState<Record<number, number>>({});
 
   // Stable id -> priority map. Recomputed only when the order actually changes,
   // so renderFocusItem's identity stays stable during a drag (no full remount flicker).
@@ -79,12 +93,16 @@ export default function HomeScreen() {
 
   const loadTasks = useCallback(async () => {
     const today = getCurrentDateString();
-    const [focus, habits] = await Promise.all([
+    const [focus, habits, fires] = await Promise.all([
       getFocusTasks(today),
       getHabitTasks(today),
+      getNextIntervalFireTimes(),
     ]);
     setFocusTasks(focus);
     setHabitTasks(habits);
+    setNextFireByTask(
+      Object.fromEntries(fires.map((f) => [f.task_id, f.next_fire_at]))
+    );
   }, []);
 
   // Refresh whenever the screen regains focus (e.g. returning from a modal).
@@ -94,6 +112,18 @@ export default function HomeScreen() {
       recoverTimer();
     }, [loadTasks, recoverTimer]),
   );
+
+  // FIX-QUOTA-STOP: a session was finalized WITHOUT a user interaction (quota
+  // auto-stop, or single-timer auto-pause) — reload so the card flips to its
+  // persisted state (green tick, quota logged) instead of showing stale totals.
+  // QA M2: skip the mount run — the focus effect above already loads then,
+  // so reacting to the initial sessionsVersion=0 double-fetched 3 queries.
+  const lastSessionsVersionRef = useRef(sessionsVersion);
+  useEffect(() => {
+    if (sessionsVersion === lastSessionsVersionRef.current) return;
+    lastSessionsVersionRef.current = sessionsVersion;
+    void loadTasks();
+  }, [sessionsVersion, loadTasks]);
 
   function handleFAB() {
     navigation.navigate('CreateTask', { defaultType: activeTab });
@@ -128,6 +158,18 @@ export default function HomeScreen() {
     );
   }
 
+  // 7c — swipe right = archive, immediate, no prompt (design brief). Same
+  // caller duties as delete: stop the timer, cancel notifications.
+  async function handleArchive(taskId: number) {
+    if (activeTaskId === taskId) {
+      await pauseTimer(taskId);
+    }
+    await cancelNotificationsForTaskFull(taskId);
+    await archiveTask(taskId);
+    toast('Archived — find it in Settings');
+    await loadTasks();
+  }
+
   async function handleDragEnd(data: TaskWithProgress[]) {
     // Optimistic UI update
     setFocusTasks(data);
@@ -139,18 +181,10 @@ export default function HomeScreen() {
     await reorderFocusTasks(newOrder);
   }
 
-  function toast(message: string) {
-    if (Platform.OS === 'android') ToastAndroid.show(message, ToastAndroid.SHORT);
-  }
-
-  // Toggle this task's timer; refresh persisted progress after a pause/stop.
+  // Toggle this task's timer. QA M2: no manual reload — a pause finalizes the
+  // session, which bumps sessionsVersion, and the effect above reloads once.
   async function handleToggle(taskId: number) {
-    const wasRunning = activeTaskId === taskId;
     await toggleTimer(taskId);
-    if (wasRunning) {
-      // Just paused/stopped — daily_progress changed; reload to show new totals.
-      await loadTasks();
-    }
   }
 
   // Manual "mark complete" from the check button.
@@ -179,11 +213,30 @@ export default function HomeScreen() {
     await loadTasks();
   }
 
-  // Habit check-off (QA A1): count one interval as done and refresh the card.
+  // Habit check-off (QA A1): count one interval as done, then restart the
+  // cadence from NOW (2026-07-07 fix) — cancels the repeating ping and
+  // schedules a fresh one, so the countdown resets to the full interval
+  // instead of sticking on "due now".
   async function handleHabitCheck(taskId: number) {
     await recordIntervalFired(taskId, getCurrentDateString());
+    await restartHabitCadence(taskId);
     await loadTasks();
   }
+
+  // QA C4: stable renderItem so HabitTaskCard's memo actually skips re-renders.
+  const renderHabitItem = useCallback(
+    ({ item }: ListRenderItemInfo<HabitWithProgress>) => (
+      <HabitTaskCard
+        task={item}
+        nextFireAt={nextFireByTask[item.id] ?? null}
+        onPress={() => openEdit(item.id)}
+        onDelete={() => confirmDelete(item.id, item.name)}
+        onArchive={() => handleArchive(item.id)}
+        onCheck={() => handleHabitCheck(item.id)}
+      />
+    ),
+    [nextFireByTask, activeTaskId],
+  );
 
   const renderFocusItem = useCallback(
     ({ item, drag, isActive }: RenderItemParams<TaskWithProgress>) => {
@@ -196,16 +249,18 @@ export default function HomeScreen() {
           priority={priority}
           onPress={() => openEdit(item.id)}
           onDelete={() => confirmDelete(item.id, item.name)}
+          onArchive={() => handleArchive(item.id)}
           onDragStart={drag}
           isActive={isActive}
-          isRunning={activeTaskId === item.id}
-          liveSeconds={activeTaskId === item.id ? elapsedSeconds : 0}
+          liveStartedAt={activeTaskId === item.id ? activeStartedAt : null}
           onToggleTimer={() => handleToggle(item.id)}
           onComplete={() => handleComplete(item.id, item.name)}
         />
       );
     },
-    [priorityById, activeTaskId, elapsedSeconds],
+    // PERF C2: no per-second dep here — identity changes only on reorder or
+    // timer start/stop, so cards are not re-created every second any more.
+    [priorityById, activeTaskId, activeStartedAt],
   );
 
   return (
@@ -236,26 +291,9 @@ export default function HomeScreen() {
       {/* Snooze banner — slides in below header while snoozed */}
       <SnoozeBanner visible={snoozed} onResume={toggleSnooze} />
 
-      {/* Pill Tabs */}
-      <View style={styles.pillContainer}>
-        <TouchableOpacity
-          style={[styles.pill, activeTab === 'focus' && styles.pillActive]}
-          onPress={() => setActiveTab('focus')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.pillText, activeTab === 'focus' && styles.pillTextActive]}>
-            Focus
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.pill, activeTab === 'habit' && styles.pillActive]}
-          onPress={() => setActiveTab('habit')}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.pillText, activeTab === 'habit' && styles.pillTextActive]}>
-            Habits
-          </Text>
-        </TouchableOpacity>
+      {/* Pill Tabs (FilterPills — 7c adoption) */}
+      <View style={styles.pillWrap}>
+        <FilterPills options={TAB_OPTIONS} active={activeTab} onChange={setActiveTab} />
       </View>
 
       {/* Task List */}
@@ -277,14 +315,7 @@ export default function HomeScreen() {
         <FlatList
           data={habitTasks}
           keyExtractor={(item) => String(item.id)}
-          renderItem={({ item }) => (
-            <HabitTaskCard
-              task={item}
-              onPress={() => openEdit(item.id)}
-              onDelete={() => confirmDelete(item.id, item.name)}
-              onCheck={() => handleHabitCheck(item.id)}
-            />
-          )}
+          renderItem={renderHabitItem}
           contentContainerStyle={styles.listContent}
         />
       )}
@@ -345,37 +376,9 @@ const styles = StyleSheet.create({
   snoozeButtonActive: {
     backgroundColor: colors.snooze,
   },
-  pillContainer: {
-    flexDirection: 'row',
+  pillWrap: {
     marginHorizontal: spacing.lg,
     marginVertical: spacing.sm,
-    backgroundColor: pillTab.containerBackground,
-    borderRadius: pillTab.containerBorderRadius,
-    padding: pillTab.containerPadding,
-  },
-  pill: {
-    flex: 1,
-    height: pillTab.height,
-    borderRadius: pillTab.borderRadius,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: pillTab.inactiveBackground,
-  },
-  pillActive: {
-    backgroundColor: pillTab.activeBackground,
-    shadowColor: colors.shadowColor,
-    shadowOffset: { width: 1, height: 1 },
-    shadowOpacity: 0.12,
-    shadowRadius: 0,
-    elevation: 2,
-  },
-  pillText: {
-    fontFamily: typography.fonts.bodySemiBold,
-    fontSize: typography.sizes.body,
-    color: pillTab.inactiveTextColor,
-  },
-  pillTextActive: {
-    color: pillTab.activeTextColor,
   },
   listContent: {
     paddingHorizontal: spacing.lg,

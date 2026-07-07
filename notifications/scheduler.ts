@@ -4,9 +4,10 @@
  * SQLite `notification_schedule` table (db/notifications.ts) in sync.
  *
  * Two notification kinds (see SCHEMA-02 in issues log):
- *   - 'interval' : habit pings on a repeating cadence. Time-scheduled; restarted
- *                  fresh (scheduleAllHabitNotifications) on snooze-resume and at
- *                  the daily reset.
+ *   - 'interval' : habit pings on a repeating cadence (repeats:true — the OS
+ *                  re-fires every interval, app alive or not). Restarted fresh
+ *                  on habit check-off (restartHabitCadence), snooze-resume and
+ *                  daily reset (scheduleAllHabitNotifications).
  *   - 'times_up' : fired when a Focus quota is hit. Event-driven (fires now),
  *                  NEVER rescheduled by time.
  *
@@ -23,13 +24,19 @@ import {
   getActiveNotificationsForTask,
 } from '@/db/notifications';
 import { getActiveHabitTasksBasic, getTask } from '@/db/tasks';
+import { isSnoozeActive } from '@/db/settings';
 
 const ANDROID_CHANNEL_ID = 'default';
 
 // ─── Interval (habit) notifications ─────────────────────────────────────────
 
 /**
- * Schedule the NEXT interval ping for a habit task and record it.
+ * Schedule the REPEATING interval ping for a habit task and record it.
+ * repeats:true — first fire after `seconds`, then every `seconds` again, even
+ * with the app backgrounded or dead (2026-07-07 fix: the old one-shot +
+ * reschedule-on-fire only ran foregrounded, so habits pinged once then went
+ * silent). scheduled_for stores the FIRST fire — the "due at" anchor for the
+ * card countdown/overdue line; it moves only on check-off or reschedule.
  * No-op if the task has no interval_minutes (e.g. a focus task).
  * Returns the expo notification id, or null if nothing was scheduled.
  *
@@ -56,6 +63,7 @@ export async function scheduleIntervalNotification(
     trigger: {
       type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
       seconds,
+      repeats: true,
       channelId: ANDROID_CHANNEL_ID,
     },
   });
@@ -76,13 +84,6 @@ export async function cancelNotificationsForTaskFull(taskId: number): Promise<vo
   await cancelNotificationsForTask(taskId);
 }
 
-/**
- * Cancel one specific scheduled notification (expo + DB).
- */
-export async function cancelScheduledNotification(notificationId: string): Promise<void> {
-  await Notifications.cancelScheduledNotificationAsync(notificationId);
-  await cancelNotificationById(notificationId);
-}
 
 // ─── Times-up (focus quota) notification ────────────────────────────────────
 
@@ -141,16 +142,21 @@ export async function scheduleAllHabitNotifications(): Promise<void> {
   }
 }
 
-// ─── Fire-and-reschedule (notification received while app alive) ────────────
+// ─── Check-off cadence restart ──────────────────────────────────────────────
 
 /**
- * When an interval notification fires, schedule the NEXT one so the habit keeps
- * pinging. Called from the notification-received handler in the app root.
- * Looks the task up fresh — and checks soft-delete/archive flags (QA A4) — so a
- * deleted or archived habit genuinely stops pinging even if it disappears
- * between the fire and this handler.
+ * User checked a habit off — restart its cadence from NOW. Cancels the live
+ * repeating notification (expo + DB) and schedules a fresh one, so the card
+ * countdown resets to the full interval and the "due at" anchor
+ * (notification_schedule.scheduled_for) moves forward.
+ *
+ * Replaces rescheduleAfterIntervalFired (Phase 5): pings are repeats:true now,
+ * so the OS keeps firing them with the app backgrounded/dead and nothing needs
+ * rescheduling on fire. Looks the task up fresh — and checks soft-delete/
+ * archive flags (QA A4) — so a deleted or archived habit never gets a new ping.
+ * While snoozed: cancel only; snooze-resume schedules all habits fresh (QA A2).
  */
-export async function rescheduleAfterIntervalFired(taskId: number): Promise<void> {
+export async function restartHabitCadence(taskId: number): Promise<void> {
   const task = await getTask(taskId);
   if (
     !task ||
@@ -160,5 +166,7 @@ export async function rescheduleAfterIntervalFired(taskId: number): Promise<void
   ) {
     return;
   }
+  await cancelNotificationsForTaskFull(taskId);
+  if (await isSnoozeActive()) return;
   await scheduleIntervalNotification(task.id, task.name, task.interval_minutes);
 }

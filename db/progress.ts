@@ -20,12 +20,19 @@ export interface DailyProgress {
   updated_at: number;
 }
 
-/** For the History screen bar chart — one row per task per day in range. */
-export interface HistoryRow {
+/** Phase 7b — one bar on the History chart: a task's total over the range. */
+export interface HistoryTotalsRow {
+  id: number;
   name: string;
-  date: string;
-  logged_minutes: number;
   quota_minutes: number | null;
+  total_seconds: number;
+}
+
+/** Phase 7b — habit ping counts for the optional History footer chips. */
+export interface HabitPingRow {
+  id: number;
+  name: string;
+  ping_count: number;
 }
 
 // ─── Get or create ────────────────────────────────────────────────────────────
@@ -58,27 +65,16 @@ export async function getOrCreateProgress(
 // ─── Time tracking ────────────────────────────────────────────────────────────
 
 /**
- * Add minutes to a task's logged total for today.
- * Used after a timer session stops or a manual session is added.
+ * Add SECONDS to a task's logged total for today. PRIMARY time-tracking write.
  *
  * After calling this, check if the new total has reached the quota:
  *   const progress = await getOrCreateProgress(taskId, date);
- *   if (task.quota_minutes && progress.logged_minutes >= task.quota_minutes && !progress.is_complete) {
+ *   if (task.quota_minutes && progress.logged_seconds >= task.quota_minutes * 60
+ *       && !progress.is_complete) {
  *     await markComplete(taskId, date, task.quota_minutes);
  *     // then fire Time's Up notification via getNextPendingFocusTask()
  *   }
- */
-export async function addLoggedMinutes(
-  taskId: number,
-  date: string,
-  minutesToAdd: number
-): Promise<void> {
-  // Delegate to the seconds-granular primary so logged_minutes stays derived.
-  await addLoggedSeconds(taskId, date, Math.round(minutesToAdd * 60));
-}
-
-/**
- * Add SECONDS to a task's logged total for today. PRIMARY time-tracking write.
+ *
  * logged_seconds is the source of truth; logged_minutes is kept in sync as
  * floor(logged_seconds / 60) so all existing minute-based readers stay correct.
  * No minimum floor — a 5-second session logs exactly 5 seconds (fixes the old
@@ -134,6 +130,48 @@ export async function markComplete(
   }
 }
 
+/**
+ * Re-evaluate today's completion state after a task's quota changes (FIX-QUOTA-EDIT).
+ *
+ * Why: is_complete was a one-way latch — set when a quota was hit and never
+ * re-checked. Editing a finished task's quota upward left the green tick in
+ * place, so the task looked done even though logged < new quota.
+ *
+ * Rules (compares logged_seconds, the source of truth, against the new quota):
+ *   - logged_seconds <  quota*60  → is_complete = 0 (task resumes: x of y)
+ *   - logged_seconds >= quota*60  → is_complete = 1 (quota lowered under logged
+ *     time completes silently — no Time's Up push, it's an edit not a finish)
+ *
+ * No-op if there is no progress row today (nothing logged → nothing to reopen)
+ * or if the state already matches. Never inflates logged time (unlike
+ * markComplete) — the whole point is to preserve real logged time x so the
+ * bar shows x → y.
+ */
+export async function reevaluateCompletion(
+  taskId: number,
+  date: string,
+  quotaMinutes: number
+): Promise<void> {
+  const db = getDb();
+
+  const row = await db.getFirstAsync<{ logged_seconds: number; is_complete: number }>(
+    'SELECT logged_seconds, is_complete FROM daily_progress WHERE task_id = ? AND date = ?;',
+    [taskId, date]
+  );
+  if (!row) return;
+
+  const shouldBeComplete =
+    quotaMinutes > 0 && row.logged_seconds >= quotaMinutes * 60 ? 1 : 0;
+  if (shouldBeComplete === row.is_complete) return;
+
+  await db.runAsync(`
+    UPDATE daily_progress
+    SET is_complete = ?,
+        updated_at  = ?
+    WHERE task_id = ? AND date = ?;
+  `, [shouldBeComplete, Date.now(), taskId, date]);
+}
+
 // ─── Interval tracking ────────────────────────────────────────────────────────
 
 /**
@@ -157,53 +195,64 @@ export async function recordIntervalFired(
   `, [now, now, taskId, date]);
 }
 
-// ─── Daily reset ──────────────────────────────────────────────────────────────
-
-/**
- * No-op: daily_progress rows are per-date, so there is nothing to clear.
- * The new day starts with no rows — they are created lazily on first interaction
- * via getOrCreateProgress(). Yesterday's rows stay intact as history.
- *
- * What the daily reset DOES need to do (handled in their respective modules):
- *   - Stop any active timer sessions (sessions.ts -> recoverOrphanedSessions)
- *   - Turn off snooze (settings.ts -> setSnoozeActive(false))
- *   - Clear and reschedule notifications (notifications.ts -> clearAllNotificationRecords,
- *     then tasks.ts -> getActiveHabitTasksBasic to reschedule each habit)
- *   - Update last_reset_date (settings.ts -> setLastResetDate)
- */
-export async function resetDailyProgress(): Promise<void> {
-  // Intentional no-op — see doc comment above.
-}
-
 // ─── History ──────────────────────────────────────────────────────────────────
+// NOTE on the daily reset: daily_progress rows are per-date, so a reset has
+// nothing to clear here — the new day starts with no rows (created lazily by
+// getOrCreateProgress). The reset's real work lives in useDailyReset.runReset.
+// (QA D-pass removed the resetDailyProgress() no-op and the per-day
+// getHistory/getTodayHistory readers — Phase 7b's aggregate queries below are
+// the only consumers of this table's history.)
 
 /**
- * Load time history for all tasks within a date range.
- * Includes archived tasks (history shows gaps during archived period).
- * Excludes soft-deleted tasks.
+ * Phase 7b — per-task focus totals over a date range: one row = one bar.
+ * Sums logged_seconds (source of truth). Excludes soft-deleted tasks
+ * (PRD: delete = history gone); INCLUDES archived tasks (history shows
+ * archived periods). Habits are out — no time dimension.
  */
-export async function getHistory(
+export async function getHistoryTotals(
   startDate: string,
   endDate: string
-): Promise<HistoryRow[]> {
+): Promise<HistoryTotalsRow[]> {
   const db = getDb();
-  return db.getAllAsync<HistoryRow>(`
+  return db.getAllAsync<HistoryTotalsRow>(`
     SELECT
+      t.id,
       t.name,
-      dp.date,
-      dp.logged_minutes,
-      t.quota_minutes
+      t.quota_minutes,
+      SUM(dp.logged_seconds) AS total_seconds
     FROM daily_progress dp
     JOIN tasks t ON t.id = dp.task_id
     WHERE dp.date BETWEEN ? AND ?
       AND t.is_deleted = 0
-    ORDER BY t.id ASC, dp.date ASC;
+      AND t.task_type  = 'focus'
+    GROUP BY t.id
+    HAVING SUM(dp.logged_seconds) > 0
+    ORDER BY total_seconds DESC;
   `, [startDate, endDate]);
 }
 
 /**
- * Load today's history. Convenience wrapper around getHistory().
+ * Phase 7b — habit ping counts over a date range (History footer chips:
+ * "Habit pings: Drink water ×6 · Stretch ×3"). Only rows with at least one
+ * ping; same delete/archive visibility rules as getHistoryTotals.
  */
-export async function getTodayHistory(today: string): Promise<HistoryRow[]> {
-  return getHistory(today, today);
+export async function getHabitPingCounts(
+  startDate: string,
+  endDate: string
+): Promise<HabitPingRow[]> {
+  const db = getDb();
+  return db.getAllAsync<HabitPingRow>(`
+    SELECT
+      t.id,
+      t.name,
+      SUM(dp.interval_count) AS ping_count
+    FROM daily_progress dp
+    JOIN tasks t ON t.id = dp.task_id
+    WHERE dp.date BETWEEN ? AND ?
+      AND t.is_deleted = 0
+      AND t.task_type  = 'habit'
+    GROUP BY t.id
+    HAVING SUM(dp.interval_count) > 0
+    ORDER BY ping_count DESC;
+  `, [startDate, endDate]);
 }
