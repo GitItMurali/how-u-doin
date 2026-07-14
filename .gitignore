@@ -46,4 +46,5 @@ crash.log
 *.tmp
 hooks/_writetest.tmp
 
+# design source (2.2MB) - assets/ has the sized copies
 /logo.png

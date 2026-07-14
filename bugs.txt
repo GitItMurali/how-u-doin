@@ -1,0 +1,7 @@
+bugs
+1. permissions in settings are frozen [but status is shown]
+2. remove m dashes all over
+3. Archive not working. can slide to see archive button but cant press it. but delete works fine.
+4. add button should we still a less down near the settings just above it in screen corner
+new features
+1. light mode, dark mode
