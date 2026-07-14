@@ -22,6 +22,13 @@ import {
   StyleSheet,
 } from 'react-native';
 import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
+// FIX-ARCHIVE-02: the archive button MUST be a gesture-handler touchable.
+// ReanimatedSwipeable renders the right-actions wrapper (absoluteFill) on top
+// of the left-actions wrapper, so RN's hit-testing hands taps in the archive
+// area to that empty overlay and a plain RN TouchableOpacity below never
+// fires. RNGH touchables use the gesture system's own hit-testing, which
+// reaches views under empty overlays.
+import { TouchableOpacity as GHTouchableOpacity } from 'react-native-gesture-handler';
 import { Play, Pause, Check, DotsSixVertical, Trash, Archive } from 'phosphor-react-native';
 
 import { colors, typography, spacing, card, progressBar, swipe } from '@/constants/theme';
@@ -101,9 +108,20 @@ function FocusTaskCard({
   }
 
   function renderLeftActions() {
+    // FIX-ARCHIVE-01/02: GH touchable (see import note) so the revealed
+    // button actually receives taps. FIX-ARCHIVE-03: the plain View owns ALL
+    // sizing and visuals (identical to the original full-height amber block,
+    // stretched by the actions row); the GH touchable simply absolute-fills
+    // it, immune to the GH touchable's own content-sizing quirks.
     return (
       <View style={styles.archiveAction}>
-        <Archive size={swipe.actionIconSize} color={colors.white} weight="bold" />
+        <GHTouchableOpacity
+          style={styles.archiveActionPress}
+          onPress={onArchive}
+          activeOpacity={0.85}
+        >
+          <Archive size={swipe.actionIconSize} color={colors.white} weight="bold" />
+        </GHTouchableOpacity>
       </View>
     );
   }
@@ -116,10 +134,6 @@ function FocusTaskCard({
       leftThreshold={swipe.revealThreshold}
       overshootRight={false}
       overshootLeft={false}
-      onSwipeableOpen={(direction) => {
-        // Swipe right (left actions revealed) = archive immediately, no prompt.
-        if (direction === 'left') onArchive();
-      }}
     >
       <TouchableOpacity
         style={[
@@ -299,5 +313,10 @@ const styles = StyleSheet.create({
     width: 72,
     borderRadius: card.borderRadius,
     marginBottom: card.gap,
+  },
+  archiveActionPress: {
+    ...StyleSheet.absoluteFill,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

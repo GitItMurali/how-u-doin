@@ -198,7 +198,7 @@ export function TimerProvider({ children }: { children: React.ReactNode }) {
         await fireTimesUpNotification(taskId, task.name, next?.name ?? null);
       }
       if (next) {
-        toast(`${task.name} — time's up. Next up: ${next.name}.`);
+        toast(`Time's up for ${task.name}. Next up: ${next.name}.`);
       } else {
         toast('You finished everything. Take a breath.');
       }

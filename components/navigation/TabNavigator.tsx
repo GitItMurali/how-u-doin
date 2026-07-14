@@ -5,7 +5,8 @@
  * Phase 2
  */
 import React from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { House, ChartBar, Gear } from 'phosphor-react-native';
 
@@ -42,12 +43,23 @@ function TabBarIcon({
 }
 
 export default function TabNavigator() {
+  // Edge-to-edge fix (2026-07-07): Android 15+ draws the app BEHIND the system
+  // nav bar. A fixed tabBarStyle height defeats react-navigation's built-in
+  // safe-area handling, so the tab bar slid under 3-button nav bars (~48dp
+  // inset); gesture phones have a tiny inset, which is why the OnePlus looked
+  // fine. max(inset, 8) preserves the old 8dp padding when there is no bar,
+  // and also handles the iOS home-indicator (34dp) without Platform forks.
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 8);
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: false,
-        tabBarStyle: styles.tabBar,
+        tabBarStyle: [
+          styles.tabBar,
+          { height: bottomNav.height - 8 + bottomPad, paddingBottom: bottomPad },
+        ],
         tabBarHideOnKeyboard: true,
       }}
     >
@@ -81,8 +93,7 @@ const styles = StyleSheet.create({
     backgroundColor: bottomNav.backgroundColor,
     borderTopColor: bottomNav.borderTopColor,
     borderTopWidth: bottomNav.borderTopWidth,
-    height: bottomNav.height + (Platform.OS === 'android' ? 0 : 20),
-    paddingBottom: Platform.OS === 'android' ? 8 : 20,
+    // height + paddingBottom are set inline from safe-area insets — see above.
     paddingTop: 8,
     elevation: 8,
     shadowColor: colors.shadowColor,

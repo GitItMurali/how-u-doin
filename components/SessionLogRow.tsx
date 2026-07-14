@@ -1,7 +1,7 @@
 /**
  * components/SessionLogRow.tsx
  * Phase 7b — one line of the History session log:
- *   "9:41 AM · 25:00 · timer"  /  "— · 15:00 · manual"  + task name.
+ *   "9:41 AM · 25:00 · timer"  /  "15:00 · manual"  + task name.
  * Day header rows (range > 1 day) are rendered by history.tsx itself.
  */
 import React from 'react';
@@ -16,20 +16,22 @@ interface SessionLogRowProps {
 }
 
 export default function SessionLogRow({ session }: SessionLogRowProps) {
+  // Manual entries have no start time; just omit it (no dash placeholder).
   const startLabel =
     session.is_manual === 1 || session.started_at === null
-      ? '—'
+      ? null
       : formatTimeOfDay(session.started_at);
   const kind = session.is_manual === 1 ? 'manual' : 'timer';
+  const meta = [startLabel, formatClock(session.duration_seconds), kind]
+    .filter((p): p is string => p !== null)
+    .join(' \u00B7 ');
 
   return (
     <View style={styles.row}>
       <Text style={styles.name} numberOfLines={1}>
         {session.name}
       </Text>
-      <Text style={styles.meta}>
-        {startLabel} · {formatClock(session.duration_seconds)} · {kind}
-      </Text>
+      <Text style={styles.meta}>{meta}</Text>
     </View>
   );
 }

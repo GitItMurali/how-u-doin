@@ -158,15 +158,27 @@ export default function HomeScreen() {
     );
   }
 
-  // 7c — swipe right = archive, immediate, no prompt (design brief). Same
-  // caller duties as delete: stop the timer, cancel notifications.
+  // Archive flow (user decision 2026-07-13): swipe right reveals the button,
+  // tapping it asks for confirmation, same pattern as delete. Same caller
+  // duties as delete: stop the timer, cancel notifications.
+  function confirmArchive(taskId: number, name: string) {
+    Alert.alert(
+      'Archive task?',
+      `"${name}" will move to Settings. Its history stays.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Archive', onPress: () => void handleArchive(taskId) },
+      ],
+    );
+  }
+
   async function handleArchive(taskId: number) {
     if (activeTaskId === taskId) {
       await pauseTimer(taskId);
     }
     await cancelNotificationsForTaskFull(taskId);
     await archiveTask(taskId);
-    toast('Archived — find it in Settings');
+    toast('Archived. Find it in Settings');
     await loadTasks();
   }
 
@@ -208,7 +220,7 @@ export default function HomeScreen() {
       if (!(await isSnoozeActive())) {
         await fireTimesUpNotification(taskId, name, next?.name ?? null);
       }
-      toast(next ? `${name} — time's up. Next up: ${next.name}.` : 'You finished everything. Take a breath.');
+      toast(next ? `Time's up for ${name}. Next up: ${next.name}.` : 'You finished everything. Take a breath.');
     }
     await loadTasks();
   }
@@ -217,10 +229,19 @@ export default function HomeScreen() {
   // cadence from NOW (2026-07-07 fix) — cancels the repeating ping and
   // schedules a fresh one, so the countdown resets to the full interval
   // instead of sticking on "due now".
+  // QA4: re-entrancy guard (B6 class) — a double-tap raced two
+  // cancel+reschedule cycles and could leave a duplicate repeating ping.
+  const habitCheckBusyRef = useRef(false);
   async function handleHabitCheck(taskId: number) {
-    await recordIntervalFired(taskId, getCurrentDateString());
-    await restartHabitCadence(taskId);
-    await loadTasks();
+    if (habitCheckBusyRef.current) return;
+    habitCheckBusyRef.current = true;
+    try {
+      await recordIntervalFired(taskId, getCurrentDateString());
+      await restartHabitCadence(taskId);
+      await loadTasks();
+    } finally {
+      habitCheckBusyRef.current = false;
+    }
   }
 
   // QA C4: stable renderItem so HabitTaskCard's memo actually skips re-renders.
@@ -231,7 +252,7 @@ export default function HomeScreen() {
         nextFireAt={nextFireByTask[item.id] ?? null}
         onPress={() => openEdit(item.id)}
         onDelete={() => confirmDelete(item.id, item.name)}
-        onArchive={() => handleArchive(item.id)}
+        onArchive={() => confirmArchive(item.id, item.name)}
         onCheck={() => handleHabitCheck(item.id)}
       />
     ),
@@ -249,7 +270,7 @@ export default function HomeScreen() {
           priority={priority}
           onPress={() => openEdit(item.id)}
           onDelete={() => confirmDelete(item.id, item.name)}
-          onArchive={() => handleArchive(item.id)}
+          onArchive={() => confirmArchive(item.id, item.name)}
           onDragStart={drag}
           isActive={isActive}
           liveStartedAt={activeTaskId === item.id ? activeStartedAt : null}
@@ -322,7 +343,7 @@ export default function HomeScreen() {
 
       {/* FAB */}
       <TouchableOpacity
-        style={[styles.fab, { bottom: fab.bottom + insets.bottom }]}
+        style={[styles.fab, { bottom: fab.bottom }]}
         onPress={handleFAB}
         activeOpacity={0.85}
       >

@@ -16,6 +16,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  AppState,
   View,
   Text,
   StyleSheet,
@@ -120,7 +121,7 @@ function ChangePinSheet({
       }
       // confirm
       if (pin !== newPin) {
-        setHint("Didn't match — pick the new PIN again.");
+        setHint("Didn't match. Pick the new PIN again.");
         setTimeout(() => {
           setNewPin(null);
           setStep('new');
@@ -214,49 +215,56 @@ export default function SettingsScreen() {
     };
   }, []);
 
-  // Biometric availability + preference (once — hardware doesn't change).
+  // Biometric preference (once; the toggle itself keeps it in sync after).
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const [hasHw, enrolled, enabled] = await Promise.all([
-          LocalAuthentication.hasHardwareAsync(),
-          LocalAuthentication.isEnrolledAsync(),
-          isBiometricsEnabled(),
-        ]);
-        if (mounted) {
-          setBioSupported(hasHw && enrolled);
-          setBioEnabled(enabled);
-        }
-      } catch {
-        if (mounted) setBioSupported(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
+    void isBiometricsEnabled().then(setBioEnabled).catch(() => {});
   }, []);
 
-  // Notification permission + archive list — re-read on every focus (the user
-  // may return from the system settings screen or have archived on Home).
+  // FIX-SETTINGS-STALE: re-read everything the user can change OUTSIDE the app
+  // (system notification permission, biometric enrollment). A focus effect
+  // alone never saw those changes: "Open settings" backgrounds the app, and
+  // coming back is an AppState change, NOT a navigation focus. So the
+  // permission row sat frozen on its old value.
+  const refreshExternalState = useCallback(async () => {
+    try {
+      const [s, hasHw, enrolled] = await Promise.all([
+        Notifications.getPermissionsAsync(),
+        LocalAuthentication.hasHardwareAsync(),
+        LocalAuthentication.isEnrolledAsync(),
+      ]);
+      setNotifStatus(s.status as 'granted' | 'denied' | 'undetermined');
+      setBioSupported(hasHw && enrolled);
+    } catch {
+      setBioSupported(false);
+    }
+  }, []);
+
+  // On focus: external state + archive list (archiving happens on Home).
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-      void (async () => {
-        const [s, arch] = await Promise.all([
-          Notifications.getPermissionsAsync(),
-          getArchivedTasks(),
-        ]);
-        if (mounted) {
-          setNotifStatus(s.status as typeof notifStatus);
-          setArchived(arch);
-        }
-      })();
-      return () => {
-        mounted = false;
-      };
-    }, [])
+      void refreshExternalState();
+      void getArchivedTasks().then(setArchived);
+    }, [refreshExternalState])
   );
+
+  // On return to foreground (e.g. back from system settings): refresh too.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshExternalState();
+    });
+    return () => sub.remove();
+  }, [refreshExternalState]);
+
+  // Never-asked: show the system dialog right here. Denied: only the system
+  // settings screen can flip it back.
+  const handleNotifRowPress = useCallback(async () => {
+    if (notifStatus === 'undetermined') {
+      const r = await Notifications.requestPermissionsAsync();
+      setNotifStatus(r.status as 'granted' | 'denied' | 'undetermined');
+    } else {
+      await Linking.openSettings();
+    }
+  }, [notifStatus]);
 
   // 7c — restore an archived task. Lands at the bottom of its tab's list;
   // habits get their interval ping rescheduled (restoreTask CALLER MUST —
@@ -378,11 +386,11 @@ export default function SettingsScreen() {
               <View style={styles.rowDivider} />
               <TouchableOpacity
                 style={styles.row}
-                onPress={() => void Linking.openSettings()}
+                onPress={() => void handleNotifRowPress()}
                 activeOpacity={0.8}
               >
                 <Text style={[styles.rowLabel, { color: colors.primary }]}>
-                  Open settings
+                  {notifStatus === 'undetermined' ? 'Allow notifications' : 'Open settings'}
                 </Text>
                 <CaretRight size={18} color={colors.primary} />
               </TouchableOpacity>
@@ -402,8 +410,8 @@ export default function SettingsScreen() {
 
         {archived.length === 0 ? (
           <Text style={styles.caption}>
-            Nothing archived. Swipe a task right on Home to tuck it away here —
-            its history stays.
+            Nothing archived. Swipe a task right on Home to tuck it away here.
+            Its history stays.
           </Text>
         ) : (
           <View style={styles.card}>

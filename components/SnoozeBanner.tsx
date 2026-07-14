@@ -38,7 +38,7 @@ export default function SnoozeBanner({ visible, onResume }: Props) {
       pointerEvents={visible ? 'auto' : 'none'}
     >
       <BellSimpleZ size={18} color={colors.white} weight="fill" />
-      <Text style={styles.label}>Snoozed — notifications paused</Text>
+      <Text style={styles.label}>Snoozed. Notifications paused</Text>
       <TouchableOpacity onPress={onResume} hitSlop={10} activeOpacity={0.8}>
         <Text style={styles.resume}>Resume</Text>
       </TouchableOpacity>

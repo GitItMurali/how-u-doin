@@ -157,8 +157,9 @@ export const fab = {
     shadowRadius: 0,
     elevation: 6,
   },
-  // Position from screen edge
-  bottom: spacing.xl,   // 24
+  // Position from screen edge. The screen already ends above the tab bar,
+  // so a small offset puts the FAB in the corner right above Settings.
+  bottom: spacing.md,   // 12
   right: spacing.lg,    // 16
 } as const;
 

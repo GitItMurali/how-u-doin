@@ -18,7 +18,6 @@
 import * as Notifications from 'expo-notifications';
 import {
   saveNotification,
-  cancelNotificationById,
   cancelNotificationsForTask,
   cancelAllNotifications as dbCancelAllNotifications,
   getActiveNotificationsForTask,
@@ -101,7 +100,7 @@ export async function fireTimesUpNotification(
   nextName: string | null
 ): Promise<string> {
   const body = nextName
-    ? `${taskName} — time's up. Next up: ${nextName}.`
+    ? `Time's up for ${taskName}. Next up: ${nextName}.`
     : 'You finished everything. Take a breath.';
 
   const notificationId = await Notifications.scheduleNotificationAsync({

@@ -22,7 +22,6 @@ import * as Notifications from 'expo-notifications';
 import {
   NavigationContainerRefWithCurrent,
 } from '@react-navigation/native';
-import { getNotificationByExpoId } from '@/db/notifications';
 import type { RootStackParamList } from '@/app/_layout';
 
 type NavRef = NavigationContainerRefWithCurrent<RootStackParamList>;
@@ -31,16 +30,13 @@ export function useNotificationObserver(navRef: NavRef): void {
   useEffect(() => {
     // User tapped a push -> route to the right place.
     const responseSub = Notifications.addNotificationResponseReceivedListener(
-      (response) => {
-        void (async () => {
-          const expoId = response.notification.request.identifier;
-          // Resolved for future deep-linking; intentionally unused for now.
-          const record = await getNotificationByExpoId(expoId);
-          void record;
-          if (navRef.isReady()) {
-            navRef.navigate('Tabs');
-          }
-        })();
+      () => {
+        // V1: every tap lands on Home. For V1.1 deep-linking, resolve the
+        // record via getNotificationByExpoId(response.notification.request
+        // .identifier) — db/notifications.ts, QA4 removed the discarded call.
+        if (navRef.isReady()) {
+          navRef.navigate('Tabs');
+        }
       }
     );
 
